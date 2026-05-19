@@ -170,18 +170,30 @@ export function handler(args: BuilderArguments<typeof builder>) {
       // reloads while the file is being written to)
       const tmpTilesPath = path.join(os.tmpdir(), `${gamePrefix}.${type}`);
       const tmpTilesLog = path.join(os.tmpdir(), `${gamePrefix}.${type}.log`);
-      const cmd =
-        // min-zoom 4, max-zoom 14.
-        // max-zoom shouldn't be too low, otherwise rounding artifacts will
-        // appear, like rectangles that look like trapezoids.
-        `tippecanoe -Z4 -z13 ` +
+      // min-zoom 4, max-zoom 14.
+      // max-zoom shouldn't be too low, otherwise rounding artifacts will
+      // appear, like rectangles that look like trapezoids.
+      const tippecanoeArgs =
+        `-Z4 -z13 ` +
         (args.minAttrs
           ? minAttributes.map(a => `-y ${a}`).join(' ') + ' '
           : '') +
         `-B 4 ` + // -B 4 preserves all points, starting at zoom 4
         `-b 10` + // -b 10 helps with tile-boundary weirdness
-        ` --force -o ${tmpTilesPath} ${geoJsonPath} ` +
-        `> ${tmpTilesLog} 2>&1`;
+        ` --force`;
+
+      // tippecanoe has no native Windows build. Set TIPPECANOE_DOCKER
+      // to an image name (see docker/tippecanoe.Dockerfile in the
+      // simulogistics/tools repo) to run it in a container instead —
+      // the temp dir holding the geojson + output is bind-mounted at
+      // /data, so all paths are passed relative to it.
+      const dockerImage = process.env.TIPPECANOE_DOCKER;
+      const cmd = dockerImage
+        ? `docker run --rm -v "${os.tmpdir()}:/data" ${dockerImage} ` +
+          `${tippecanoeArgs} -o /data/${path.basename(tmpTilesPath)} ` +
+          `/data/${path.basename(geoJsonPath)} > ${tmpTilesLog} 2>&1`
+        : `tippecanoe ${tippecanoeArgs} -o ${tmpTilesPath} ${geoJsonPath} ` +
+          `> ${tmpTilesLog} 2>&1`;
 
       logger.log(`running tippecanoe to generate ${type} file...`);
       logger.info('  ', cmd);

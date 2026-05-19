@@ -413,6 +413,17 @@ export type CompanyItem = BaseItem &
     nodeUid: bigint;
   }>;
 
+export type GarageItem = BaseItem &
+  Readonly<{
+    type: ItemType.Garage;
+    // City this buyable garage belongs to (matches a City token).
+    cityToken: string;
+    // 0 = the free starter garage, 1 = a garage the player can buy.
+    garageType: number;
+    prefabUid: bigint;
+    nodeUid: bigint;
+  }>;
+
 export type Cutscene = BaseItem &
   Readonly<{
     type: ItemType.Cutscene;
@@ -466,6 +477,7 @@ export type Item =
   | MapOverlay
   | FerryItem
   | CompanyItem
+  | GarageItem
   | Cutscene
   | Trigger
   | Sign
@@ -622,6 +634,7 @@ export interface MapData extends DefData {
   ferries: Ferry[];
   prefabs: Prefab[];
   companies: CompanyItem[];
+  garages: GarageItem[];
   models: Model[];
   mapAreas: MapArea[];
   pois: Poi[];

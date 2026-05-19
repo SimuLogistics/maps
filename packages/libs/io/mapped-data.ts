@@ -16,6 +16,7 @@ import type {
   Curve,
   Cutscene,
   Ferry,
+  GarageItem,
   MapArea,
   MapData,
   MappedDataOverride,
@@ -58,6 +59,7 @@ interface MapDataKeyFields {
   cutscenes: PickKey<'cutscenes', 'uid'>;
   dividers: PickKey<'dividers', 'uid'>;
   elevation: PickKey<'elevation', never>;
+  garages: PickKey<'garages', 'uid'>;
   ferries: PickKey<'ferries', 'token'>;
   mapAreas: PickKey<'mapAreas', 'uid'>;
   mileageTargets: PickKey<'mileageTargets', 'token'>;
@@ -331,6 +333,17 @@ export function readMapData<
         mapData.companies = mapify(allCompanies.filter(focusXY), c => c.uid);
         mapData.companies.values().forEach(company => {
           referencedNodeUids.add(company.nodeUid);
+        });
+        break;
+      case 'garages':
+        mapData.garages = mapify(
+          readArrayFile<GarageItem>(source, toJsonFilePath(key), {
+            filter: focusXY,
+          }),
+          g => g.uid,
+        );
+        mapData.garages.values().forEach(garage => {
+          referencedNodeUids.add(garage.nodeUid);
         });
         break;
       case 'models':

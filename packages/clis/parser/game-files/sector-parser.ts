@@ -14,6 +14,7 @@ import type {
   Curve,
   Cutscene,
   FerryItem,
+  GarageItem,
   MapArea,
   MapOverlay,
   Model,
@@ -642,6 +643,8 @@ export function parseSector(
             return toFerry(ri);
           case ItemType.Company:
             return toCompany(ri);
+          case ItemType.Garage:
+            return toGarage(ri);
           case ItemType.Cutscene:
             return toCutscene(ri);
           case ItemType.Trigger:
@@ -801,6 +804,18 @@ function toCompany(rawItem: SectorItem<ItemType.Company>): CompanyItem {
     ...toBaseItem(rawItem),
     token: rawItem.overlayName,
     cityToken: rawItem.cityName,
+    prefabUid: rawItem.prefabUid,
+    nodeUid: rawItem.nodeUid,
+  };
+}
+
+function toGarage(rawItem: SectorItem<ItemType.Garage>): GarageItem {
+  return {
+    ...toBaseItem(rawItem),
+    cityToken: rawItem.cityName,
+    // The Garage struct's own `type` field (uint32le): 0 = the free
+    // starter garage, 1 = a garage the player can buy.
+    garageType: rawItem.type,
     prefabUid: rawItem.prefabUid,
     nodeUid: rawItem.nodeUid,
   };

@@ -21,6 +21,7 @@ import type {
   Ferry,
   FerryConnection,
   FerryItem,
+  GarageItem,
   Item,
   MapArea,
   MapData,
@@ -464,6 +465,7 @@ function postProcess(
   const cutscenes: Cutscene[] = [];
   const triggers: Trigger[] = [];
   const signs: Sign[] = [];
+  const garages: GarageItem[] = [];
   const ferryItems = new Map<string, FerryItem>();
   const poifulItems: (
     | Prefab
@@ -537,6 +539,14 @@ function postProcess(
         checkReference(item.cityToken, defData.cities, 'city token', item);
         referencedNodeUids.add(item.nodeUid);
         poifulItems.push(item);
+        break;
+      case ItemType.Garage:
+        // Buyable garages. We keep them for the city-level "has a
+        // garage you can buy" flag downstream; not rendered as POIs
+        // here (the BuyPos spawn point already produces one).
+        checkReference(item.nodeUid, nodesByUid, 'nodeUid', item);
+        referencedNodeUids.add(item.nodeUid);
+        garages.push(item);
         break;
       case ItemType.Cutscene:
         checkReference(item.nodeUid, nodesByUid, 'nodeUid', item);
@@ -1102,6 +1112,7 @@ function postProcess(
       ferries,
       prefabs,
       companies,
+      garages,
       models,
       mapAreas,
       pois,

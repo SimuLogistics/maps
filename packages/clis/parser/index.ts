@@ -46,6 +46,14 @@ function main() {
       choices: ['defs', 'icons', 'all'] as const,
       default: 'all' as 'defs' | 'icons' | 'all',
     })
+    .option('locale', {
+      alias: 'l',
+      describe:
+        'Locale to use when resolving city/country/ferry names ' +
+        '(must match a locale/<subdir>/ in the game files, e.g. fr_fr, de_de, en_us).',
+      type: 'string',
+      default: 'en_us',
+    })
     .option('dryRun', {
       describe: "Don't write out any files",
       type: 'boolean',

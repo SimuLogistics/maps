@@ -55,7 +55,21 @@ import {
 
 export function parseMapFiles(
   scsFilePaths: string[],
-  { includeDlc, mode }: { includeDlc: boolean; mode: 'defs' | 'icons' | 'all' },
+  {
+    includeDlc,
+    mode,
+    locale = 'en_us',
+  }: {
+    includeDlc: boolean;
+    mode: 'defs' | 'icons' | 'all';
+    /**
+     * Locale to use when resolving city/country/ferry/etc.
+     * `nameLocalized` keys. Must match a `locale/<subdir>/` directory
+     * present in the game files (e.g. `en_us`, `fr_fr`, `de_de`).
+     * Defaults to `en_us` for backward compatibility.
+     */
+    locale?: string;
+  },
 ):
   | {
       data: 'all';
@@ -114,7 +128,19 @@ export function parseMapFiles(
     }
 
     const defData = parseDefFiles(entries, version.application);
-    const l10n = assertExists(parseLocaleFiles(entries).get('en_us'));
+    const allLocales = parseLocaleFiles(entries);
+    const l10n =
+      allLocales.get(locale) ??
+      // Fall back to en_us if the requested locale isn't shipped — log
+      // it loudly so the operator knows the requested labels won't show.
+      (() => {
+        logger.warn(
+          `requested locale "${locale}" not found in game files; ` +
+            `falling back to en_us. Available: ` +
+            [...allLocales.keys()].sort().join(', '),
+        );
+        return assertExists(allLocales.get('en_us'));
+      })();
     if (mode === 'defs') {
       return {
         ...baseResult,

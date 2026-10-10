@@ -341,6 +341,38 @@ def chaikin(c):
     return np.vstack([c[:1], out, c[-1:]])
 
 
+def extend_to_coast(c, sea):
+    """Border lines stop up to BORDER_COAST_GAP px short of the sea (the coast
+    is antialiased, so it can't be told apart from a border there). Joins each
+    end to the nearest sea pixel ahead of it, if there is one close enough."""
+    n = sea.shape[0]
+    r = 2 * BORDER_COAST_GAP
+    oy, ox = np.mgrid[-r:r + 1, -r:r + 1]
+
+    def reach(end, prev):
+        x, y = np.round(end).astype(int)
+        if not (r <= x < n - r and r <= y < n - r):
+            return None
+        win = sea[y - r:y + r + 1, x - r:x + r + 1].astype(bool)
+        ahead = (ox * (end - prev)[0] + oy * (end - prev)[1]) > 0
+        dist = np.hypot(ox, oy)
+        ok = win & ahead & (dist <= r)
+        if not ok.any():
+            return None
+        k = np.argmin(np.where(ok, dist, np.inf))
+        return np.array([x + ox.flat[k], y + oy.flat[k]], float)
+
+    if len(c) < 2:
+        return c
+    back = min(len(c) - 1, 6)
+    head = reach(c[0], c[back])
+    tail = reach(c[-1], c[-1 - back])
+    parts = ([head[None]] if head is not None else []) + [c] + (
+        [tail[None]] if tail is not None else []
+    )
+    return np.vstack(parts)
+
+
 def extract_borders(tex, sea, center, size_km):
     """Country border lines drawn on the texture, in lon/lat."""
     n = tex.shape[0]
@@ -366,6 +398,7 @@ def extract_borders(tex, sea, center, size_km):
     lines = []
     for g in getattr(merged, 'geoms', [merged]):
         c = chaikin(np.array(g.simplify(BORDER_SIMPLIFY_PX).coords))
+        c = extend_to_coast(c, sea)
         tx = (c[:, 0] + 0.5) / n * w + center[0] - w / 2
         ty = (c[:, 1] + 0.5) / n * h + center[1] - h / 2
         lon, lat = texture_coords_to_wgs84(tx, ty)

@@ -1,13 +1,16 @@
 # ets2-water
 
-Builds `packages/clis/generator/resources/ets2-water.geojson`, which is the
-water layer for `ets2-world.pmtiles`. It is traced from ETS2's own UI map
-texture, so coastlines line up with the roads and buildings in `ets2.pmtiles`.
-The real-world `water.geojson` doesn't line up because the game's geography is
-compressed and distorted.
+Builds `ets2-water.geojson` and `ets2-countries.geojson` in
+`packages/clis/generator/resources/`, the water and country border layers of
+`ets2-world.pmtiles`. Both are traced from ETS2's own UI map texture, so
+coastlines and borders line up with the roads and buildings in `ets2.pmtiles`.
+The real-world `water.geojson` and `countries.geojson` don't line up because
+the game's geography is compressed and distorted.
 
-The texture only covers Europe. Everywhere else, the output keeps
-`water.geojson` unchanged.
+The texture only covers Europe. Everywhere else, the outputs keep
+`water.geojson` and `countries.geojson` unchanged. Borders the texture doesn't
+draw (Serbia-Kosovo) are taken from `countries.geojson`, shifted by the local
+offset to the drawn borders around them.
 
 ## Inputs
 
@@ -25,8 +28,10 @@ python3 scripts/ets2-water/build_water.py \
   --tiles <snapshot>/map/ui-texture \
   --map-data <extracted>/def/map_data.sii \
   --water packages/clis/generator/resources/water.geojson \
-  --out packages/clis/generator/resources/ets2-water.geojson
-npx prettier --write packages/clis/generator/resources/ets2-water.geojson
+  --out packages/clis/generator/resources/ets2-water.geojson \
+  --countries packages/clis/generator/resources/countries.geojson \
+  --countries-out packages/clis/generator/resources/ets2-countries.geojson
+npx prettier --write packages/clis/generator/resources/ets2-*.geojson
 make out/ets2-world.pmtiles
 ```
 

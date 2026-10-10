@@ -26,6 +26,7 @@ python3 scripts/ets2-water/build_water.py \
   --map-data <extracted>/def/map_data.sii \
   --water packages/clis/generator/resources/water.geojson \
   --out packages/clis/generator/resources/ets2-water.geojson
+npx prettier --write packages/clis/generator/resources/ets2-water.geojson
 make out/ets2-world.pmtiles
 ```
 

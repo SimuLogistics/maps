@@ -45,6 +45,13 @@ $(GENERATOR_OUT_DIR)/world.pmtiles: $(addprefix $(RESOURCES_DIR)/,water.geojson 
 DEMO_FILES += $(GENERATOR_OUT_DIR)/world.pmtiles
 NAVIGATOR_FILES += $(GENERATOR_OUT_DIR)/world.pmtiles
 
+# ETS2 base layer: same as world.pmtiles, but with water traced from the game's
+# own UI map texture so coastlines line up with ets2.pmtiles. The layer keeps
+# the name `water`. Regenerate ets2-water.geojson with scripts/ets2-water.
+$(GENERATOR_OUT_DIR)/ets2-world.pmtiles: $(addprefix $(RESOURCES_DIR)/,ets2-water.geojson countries.geojson states.geojson)
+	tippecanoe -Z4 -z8 -y name -b 10 -X -o $@ -L water:$(RESOURCES_DIR)/ets2-water.geojson \
+		$(RESOURCES_DIR)/countries.geojson $(RESOURCES_DIR)/states.geojson
+
 
 # Create ATS and ETS2 pmtiles files
 $(GENERATOR_OUT_DIR)/ats.pmtiles: $(ATS_PARSER_JSON_FILES) $(RESOURCES_DIR)/trucksim-overrides.json

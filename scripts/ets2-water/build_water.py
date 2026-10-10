@@ -15,6 +15,8 @@ Texture placement comes from def/map_data.sii:
 Real km convert to game units at a 1:19 scale. That factor isn't in the def
 files; it was found by fitting every ets2.pmtiles road point against the
 texture (1.8% of road points land on water, mostly bridges and ferry ramps).
+Great Britain is the exception: the texture draws it at real-world scale while
+UK game content is ~1/0.75 bigger, so UK sectors get their own transform.
 
 Usage:
   python3 build_water.py --tiles <dir with map0..3.png> \
@@ -46,6 +48,11 @@ CALAIS = (-31100, -5500)
 
 # Real km -> game units (see module docstring).
 GAME_SCALE = 19
+# The texture draws Great Britain at real-world scale, but UK game content is
+# authored ~1/0.75 bigger (see UK_SCALE). For game coords in the UK sectors,
+# the texture position is CALAIS + (game - CALAIS) * UK_SCALE + UK_TEXTURE_SHIFT.
+# The shift was fitted on UK road points (1.2% of them land on water).
+UK_TEXTURE_SHIFT = (-500, 200)
 
 # Light grey (sea) vs dark grey/black (land) in the 8-bit luminance image.
 SEA_THRESHOLD = 100
@@ -73,7 +80,15 @@ def wgs84_to_game(lon, lat):
     is_uk = (sx <= -8) & (sy <= -2) & ~((sx == -8) & (sy == -2))
     x = np.where(is_uk, x / UK_SCALE - CALAIS[0] / 2, x)
     y = np.where(is_uk, y / UK_SCALE - CALAIS[1] / 2, y)
-    return x + MAP_OFFSET[0], y + MAP_OFFSET[1]
+    return x + MAP_OFFSET[0], y + MAP_OFFSET[1], is_uk
+
+
+def wgs84_to_texture_coords(lon, lat):
+    """Game coords, except in the UK where the texture is at real scale."""
+    x, y, is_uk = wgs84_to_game(lon, lat)
+    ux = CALAIS[0] + (x - CALAIS[0]) * UK_SCALE + UK_TEXTURE_SHIFT[0]
+    uy = CALAIS[1] + (y - CALAIS[1]) * UK_SCALE + UK_TEXTURE_SHIFT[1]
+    return np.where(is_uk, ux, x), np.where(is_uk, uy, y)
 
 
 def read_map_data(path):
@@ -137,7 +152,7 @@ def build_water_raster(sea, center, size_km, ne_features):
         r1 = min(ny, r0 + 128)
         lats = LAT1 - (np.arange(r0, r1) + 0.5) * DLAT
         lon, lat = np.meshgrid(lons, lats)
-        gx, gy = wgs84_to_game(lon, lat)
+        gx, gy = wgs84_to_texture_coords(lon, lat)
         fx = (gx - left) / w * n - 0.5
         fy = (gy - top) / h * n - 0.5
         px, py = np.floor(fx).astype(np.int64), np.floor(fy).astype(np.int64)

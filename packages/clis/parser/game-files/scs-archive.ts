@@ -542,9 +542,10 @@ class ScsArchiveTobjFile extends ScsArchiveFile {
       // BC3_UNORM_SRGB
       const firstMipmapBytes = width * height;
       ddsBytes = super.read().subarray(0, firstMipmapBytes);
-    } else if (imageFormat === 91 || imageFormat === 88) {
+    } else if (isBgra32(imageFormat)) {
       // 91: B8G8R8A8_UNORM_SRGB
       // 88: B8G8R8X8_UNORM
+      // 93: B8G8R8X8_UNORM_SRGB (ETS2 1.61 map icons)
 
       // fudge widths/heights. seems to fix problem with ETS2's sr_e763 icon.
       width = closestPowerOf2(this.imageMetadata.width);
@@ -586,10 +587,7 @@ class ScsArchiveTobjFile extends ScsArchiveFile {
           size: 32,
           flags: 0,
           // this looks like the only field of import.
-          fourCc:
-            imageFormat === 91 || imageFormat === 88
-              ? '\x00\x00\x00\x00'
-              : 'DXT5',
+          fourCc: isBgra32(imageFormat) ? '\x00\x00\x00\x00' : 'DXT5',
           rgbBitCount: 0,
           rBitMask: 0,
           gBitMask: 0,
@@ -616,6 +614,11 @@ class ScsArchiveTobjFile extends ScsArchiveFile {
 
     return ddsFile;
   }
+}
+
+/** DXGI formats stored as uncompressed 32-bit BGRA/BGRX pixels. */
+function isBgra32(imageFormat: number): boolean {
+  return imageFormat === 88 || imageFormat === 91 || imageFormat === 93;
 }
 
 function closestPowerOf2(n: number): number {

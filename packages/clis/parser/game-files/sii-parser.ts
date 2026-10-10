@@ -58,6 +58,14 @@ const Comment = createToken({
   pattern: /(\/\/|#).*/,
   group: Lexer.SKIPPED,
 });
+// Multi-line `/* … */` comments, e.g. the header of def/world/model.stable.sii
+// introduced in ETS2 1.61.
+const BlockComment = createToken({
+  name: 'BlockComment',
+  pattern: /\/\*[\s\S]*?\*\//,
+  line_breaks: true,
+  group: Lexer.SKIPPED,
+});
 
 const allTokens = [
   SiiNunit,
@@ -77,6 +85,7 @@ const allTokens = [
   HexLiteral,
   Property,
   WhiteSpace,
+  BlockComment,
   Comment,
 ];
 

@@ -179,7 +179,11 @@ export function handler(args: BuilderArguments<typeof builder>) {
           ? minAttributes.map(a => `-y ${a}`).join(' ') + ' '
           : '') +
         `-B 4 ` + // -B 4 preserves all points, starting at zoom 4
-        `-b 10` + // -b 10 helps with tile-boundary weirdness
+        // Buffer pixels around each tile. Default 10 (rapide) ; `64`
+        // recouvre les gaps visibles aux frontières de tiles sur les
+        // routes locales zoomées au prix d'un pmtiles ~+10% plus gros.
+        // Overridable via `TIPPECANOE_BUFFER` env (cf. refresh-map.mjs).
+        `-b ${process.env.TIPPECANOE_BUFFER ?? "10"}` +
         ` --force`;
 
       // tippecanoe has no native Windows build. Set TIPPECANOE_DOCKER

@@ -146,12 +146,13 @@ function toOptions(
       return allRoads && roadPoints.length > 1; //&& desc.nodes.length == 3; // && p.nodes.length !== 2 && p.mapPoints.length !== 2
     })
     .map(desc => {
-      let group;
-      if (desc.navCurves.length) {
-        group = 'Roads';
-      } else {
-        group = 'Non-roads';
-      }
+      // ETS2 a ~3000 prefabs avec des chemins du genre
+      // `prefab2/cross_temp/ger/cross_3way_ger_main_t.ppd`.
+      // On groupe par {type}/{zone} lisible, et le label est juste
+      // le nom du .ppd — bien plus lisible que le path complet.
+      const group = derivePrefabGroup(desc.path);
+      const label = derivePrefabLabel(desc.path);
+      const count = assertExists(itemsMap.get(desc.token)).length;
 
       const locations: PrefabOption['value']['locations'] = assertExists(
         itemsMap.get(desc.token),
@@ -165,7 +166,7 @@ function toOptions(
       });
 
       return {
-        label: desc.path + ' ' + desc.token,
+        label: `${label}  ×${count}`,
         group,
         value: {
           prefabDesc: desc,
@@ -176,9 +177,66 @@ function toOptions(
     .sort((a, b) => {
       if (a.group === b.group) {
         return a.label.localeCompare(b.label);
-      } else if (a.group === 'Roads') {
-        return -1;
       }
-      return 1;
+      return a.group.localeCompare(b.group);
     });
+}
+
+// Mapping des codes de zone SCS (segment 3 du path) vers un nom
+// lisible. Sans entrée mappée → on garde le code brut. `un` = universal
+// (prefabs partagés entre toutes les zones).
+const ZONE_LABELS: Record<string, string> = {
+  un: 'Universal',
+  ger: 'Germany',
+  fr: 'France',
+  it: 'Italy',
+  at: 'Austria',
+  ibe: 'Iberia',
+  balt: 'Baltic',
+  blkw: 'Black Sea (W)',
+  blke: 'Black Sea (E)',
+  rus: 'Russia',
+  uk: 'UK',
+  ch: 'Switzerland',
+  nord: 'Nordic',
+  west: 'West EU',
+};
+
+// Mapping des codes de type SCS (segment 2 du path) vers un nom lisible.
+// Liste basée sur `top folders` observés (cross_temp + fork_temp = ~70%
+// des prefabs).
+const TYPE_LABELS: Record<string, string> = {
+  cross_temp: 'Crossings (temp lights)',
+  fork_temp: 'Forks (temp lights)',
+  cross: 'Crossings',
+  fork: 'Forks',
+  depot: 'Depots',
+  tollgate: 'Tollgates',
+  bridge: 'Bridges',
+  gas_station: 'Gas stations',
+  service_station: 'Service stations',
+  parking: 'Parking',
+  garage: 'Garages',
+  hookup: 'Hookups',
+};
+
+function derivePrefabGroup(path: string): string {
+  // `prefab2/cross_temp/ger/...` → "Crossings (temp lights) / Germany"
+  // `prefab/cross/...`           → "Crossings"
+  const parts = path.split('/').filter(Boolean);
+  // parts[0] = "prefab" | "prefab2"
+  const type = parts[1] ?? 'other';
+  const zone = parts[2];
+  const typeLabel = TYPE_LABELS[type] ?? type;
+  if (!zone || zone.endsWith('.ppd')) {
+    return typeLabel;
+  }
+  const zoneLabel = ZONE_LABELS[zone] ?? zone;
+  return `${typeLabel} / ${zoneLabel}`;
+}
+
+function derivePrefabLabel(path: string): string {
+  // Garde juste le nom du fichier sans extension.
+  const filename = path.split('/').pop() ?? path;
+  return filename.replace(/\.ppd$/, '');
 }

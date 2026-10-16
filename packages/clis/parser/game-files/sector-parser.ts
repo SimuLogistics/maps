@@ -728,6 +728,10 @@ function toRoad(rawItem: SectorItem<ItemType.Road>): Road {
     //                             ┌─ bit 16 (0-based)
     secret: (rawItem.flags & 0x00_01_00_00) !== 0 ? true : undefined,
     roadLookToken: rawItem.roadLook,
+    // template looks ("un 0-2"…) declare generic lanes; the per-road lane
+    // variant (e.g. motorway / expressway / local_road) carries the real type.
+    rightLanesVariant: rawItem.rightLanesVariant || undefined,
+    leftLanesVariant: rawItem.leftLanesVariant || undefined,
     startNodeUid: rawItem.startNodeUid,
     endNodeUid: rawItem.endNodeUid,
     length: rawItem.length,

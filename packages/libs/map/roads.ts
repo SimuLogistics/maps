@@ -1,4 +1,4 @@
-import type { LaneSpeedClass, RoadLook, RoadType } from './types';
+import type { LaneSpeedClass, Road, RoadLook, RoadType } from './types';
 
 export function getRoadType(look: RoadLook): RoadType {
   const lanes = look.lanesLeft.concat(look.lanesRight);
@@ -47,4 +47,29 @@ export function getLaneSpeedClass(look: RoadLook): LaneSpeedClass {
     return 'slowRoad';
   }
   return 'localRoad';
+}
+
+/**
+ * Road type of a road item. Template road looks (e.g. the universal "un 0-2"
+ * looks used across Benelux and Scandinavia) only declare generic local lanes;
+ * the item's lane variant (motorway, expressway, local_road…) is what tells a
+ * motorway from a local road, so it wins when it names a known class.
+ */
+export function getItemRoadType(
+  road: Pick<Road, 'rightLanesVariant' | 'leftLanesVariant'>,
+  look: RoadLook,
+): RoadType {
+  const variants = [road.rightLanesVariant, road.leftLanesVariant].filter(
+    (v): v is string => !!v,
+  );
+  if (variants.some(v => v.includes('motorway') || v.includes('freeway'))) {
+    return 'freeway';
+  }
+  if (variants.some(v => v.includes('expressway') || v.includes('divided'))) {
+    return 'divided';
+  }
+  if (variants.some(v => v.includes('local') || v.includes('slow'))) {
+    return 'local';
+  }
+  return getRoadType(look);
 }

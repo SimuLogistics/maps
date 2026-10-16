@@ -23,7 +23,7 @@ import {
   toMapPosition,
   toRoadStringsAndPolygons,
 } from '@truckermudgeon/map/prefabs';
-import { getRoadType } from '@truckermudgeon/map/roads';
+import { getItemRoadType, getRoadType } from '@truckermudgeon/map/roads';
 import type {
   AtsMapGeoJsonFeature,
   City,
@@ -132,6 +132,7 @@ export function convertToMapGeoJson(
     x: number;
     y: number;
     roadLookToken: string;
+    roadType?: RoadType;
   }>()
     .x(e => e.x)
     .y(e => e.y);
@@ -279,11 +280,13 @@ export function convertToMapGeoJson(
           x: f.geometry.coordinates[0][0],
           y: f.geometry.coordinates[0][1],
           roadLookToken: r.roadLookToken,
+          roadType: f.properties.roadType,
         });
         roadQuadTree.add({
           x: f.geometry.coordinates[0][0],
           y: f.geometry.coordinates[0][1],
           roadLookToken: r.roadLookToken,
+          roadType: f.properties.roadType,
         });
         vjunctionQuadTree.add({
           x: f.geometry.coordinates[0][0],
@@ -305,6 +308,7 @@ export function convertToMapGeoJson(
           x: f.geometry.coordinates.at(-1)![0],
           y: f.geometry.coordinates.at(-1)![1],
           roadLookToken: r.roadLookToken,
+          roadType: f.properties.roadType,
         });
         vjunctionQuadTree.add({
           x: f.geometry.coordinates.at(-1)![0],
@@ -1256,7 +1260,12 @@ function augmentWithRoadContext(
   nodes: ReadonlyMap<bigint, Node>,
   // TODO replace these with a Map<bigint, RoadLook>, keyed by prefab node uids.
   roadLookMap: ReadonlyMap<string, RoadLook>,
-  roadQuadTree: Quadtree<{ x: number; y: number; roadLookToken: string }>,
+  roadQuadTree: Quadtree<{
+    x: number;
+    y: number;
+    roadLookToken: string;
+    roadType?: RoadType;
+  }>,
 ): {
   roadStrings: RoadString[];
   polygons: Polygon[];
@@ -1314,7 +1323,12 @@ function prefabToFeatures(
   // TODO make use of this to better position roads within a prefab
   _roadMap: ReadonlyMap<bigint, Road>,
   roadLookMap: ReadonlyMap<string, RoadLook>,
-  roadQuadTree: Quadtree<{ x: number; y: number; roadLookToken: string }>,
+  roadQuadTree: Quadtree<{
+    x: number;
+    y: number;
+    roadLookToken: string;
+    roadType?: RoadType;
+  }>,
   contextTree: Quadtree<{ x: number; y: number; roadLookToken: string }>,
   opts: {
     allowUnknownRoadType: boolean;
@@ -1376,9 +1390,9 @@ function prefabToFeatures(
               Math.min(distance(b, roadStart), distance(b, roadEnd)),
           )[0];
         if (nearestRoad && roadLookMap.has(nearestRoad.roadLookToken)) {
-          nearestRoadType = getRoadType(
-            roadLookMap.get(nearestRoad.roadLookToken)!,
-          );
+          nearestRoadType =
+            nearestRoad.roadType ??
+            getRoadType(roadLookMap.get(nearestRoad.roadLookToken)!);
           for (const roadPoint of txPoints) {
             // add road point entries, based on the current road string. used
             // for fallback when detecting road types of prefab-internal road
@@ -1409,9 +1423,9 @@ function prefabToFeatures(
             );
           }
           if (nearestRoad && roadLookMap.has(nearestRoad.roadLookToken)) {
-            nearestRoadType = getRoadType(
-              roadLookMap.get(nearestRoad.roadLookToken)!,
-            );
+            nearestRoadType =
+            nearestRoad.roadType ??
+            getRoadType(roadLookMap.get(nearestRoad.roadLookToken)!);
           }
         }
       }
@@ -1467,7 +1481,7 @@ function roadToFeature(
     },
   );
   const properties = {
-    ...roadLookToProperties(roadLook, !!road.hidden, !!road.secret),
+    ...roadLookToProperties(road, roadLook, !!road.hidden, !!road.secret),
     lookToken: road.roadLookToken,
     dlcGuard: road.dlcGuard,
     startNodeUid: road.startNodeUid,
@@ -1556,13 +1570,14 @@ function roadToFeature(
 }
 
 function roadLookToProperties(
+  road: Road,
   look: RoadLook,
   hidden: boolean,
   secret: boolean,
 ): RoadLookProperties {
   return {
     type: 'road',
-    roadType: getRoadType(look),
+    roadType: getItemRoadType(road, look),
     leftLanes: look.lanesLeft.length,
     rightLanes: look.lanesRight.length,
     laneOffset: look.laneOffset,

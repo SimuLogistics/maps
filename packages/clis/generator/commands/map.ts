@@ -4,6 +4,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import type { Argv, BuilderArguments } from 'yargs';
+import { cleanRoads } from '../geo-json/clean-roads';
 import { convertToMapGeoJson, geoJsonMapDataKeys } from '../geo-json/map';
 import { logger } from '../logger';
 import { parseFocusOptions } from './focus-options';
@@ -94,6 +95,12 @@ export const builder = (yargs: Argv) =>
       type: 'boolean',
       default: false,
     })
+    .option('cleanRoads', {
+      describe:
+        'Draw junctions with smooth connectors, prefab lanes and toll plazas, close road gaps and fix road types (see geo-json/clean-roads.ts).',
+      type: 'boolean',
+      default: true,
+    })
     .option('minAttrs', {
       describe: "Don't write out unused GeoJSON attrs in pmtiles/mbtiles.",
       type: 'boolean',
@@ -129,6 +136,10 @@ export function handler(args: BuilderArguments<typeof builder>) {
     includeDebug: args.includeDebug,
     skipCoalescing: args.skipCoalescing,
   });
+  if (args.cleanRoads) {
+    logger.log('cleaning roads...');
+    cleanRoads(geoJson, tsMapData);
+  }
   let geoJsonPath: string | undefined;
   const gamePrefix = args.map === 'usa' ? 'ats' : 'ets2';
   if (!args.dryRun && types.includes('geojson')) {
@@ -161,6 +172,7 @@ export function handler(args: BuilderArguments<typeof builder>) {
       'scaleRank',
       'capital',
       'roadType',
+      'lane',
       'color',
       'name',
     ];
@@ -183,7 +195,7 @@ export function handler(args: BuilderArguments<typeof builder>) {
         // recouvre les gaps visibles aux frontières de tiles sur les
         // routes locales zoomées au prix d'un pmtiles ~+10% plus gros.
         // Overridable via `TIPPECANOE_BUFFER` env (cf. refresh-map.mjs).
-        `-b ${process.env.TIPPECANOE_BUFFER ?? "10"}` +
+        `-b ${process.env.TIPPECANOE_BUFFER ?? '10'}` +
         ` --force`;
 
       // tippecanoe has no native Windows build. Set TIPPECANOE_DOCKER

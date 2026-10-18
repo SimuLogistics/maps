@@ -317,6 +317,8 @@ export type Road = BaseItem &
     hidden?: true;
     secret?: true;
     roadLookToken: string;
+    rightLanesVariant?: string;
+    leftLanesVariant?: string;
     startNodeUid: bigint;
     endNodeUid: bigint;
     length: number;

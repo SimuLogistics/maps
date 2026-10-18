@@ -127,13 +127,20 @@ export function toSplinePoints(
   end: SplinePoint,
   steps?: number,
 ): Position[] {
-  steps ??= Math.min(
-    8,
-    // 16: { 1 → 668, 2 → 100, 3 → 100, 4 → 96, 5 → 64, 6 → 44, 7 → 36, 8 → 300 }
-    // 24: { 1 → 656, 2 → 40, 3 → 72, 4 → 56, 5 → 80, 6 → 60, 7 → 40, 8 → 404 }
-    // 32: { 1 → 648, 2 → 20, 3 → 52, 4 → 48, 5 → 52, 6 → 48, 7 → 52, 8 → 488 }
-    Math.floor(Math.abs(Math.tan(start.rotation - end.rotation)) * 20) + 1,
-  );
+  if (steps == null) {
+    // One point per ~2° of heading change relative to the chord. Counting
+    // deviation from the chord (not just start vs end rotation) also
+    // samples S-curves — lane shifts, toll-plaza fans — which have equal
+    // start/end rotations and used to come out as one straight segment.
+    const wrap = (a: number) => Math.abs(Math.atan2(Math.sin(a), Math.cos(a)));
+    const [dx, dy] = [
+      end.position[0] - start.position[0],
+      end.position[1] - start.position[1],
+    ];
+    const chord = Math.atan2(dy, dx);
+    const deviation = wrap(start.rotation - chord) + wrap(end.rotation - chord);
+    steps = Math.min(64, Math.max(1, Math.ceil(deviation / (Math.PI / 90))));
+  }
   Preconditions.checkArgument(steps > 0);
   const dist = distance(start.position, end.position);
   // cubic hermite interpolation

@@ -752,6 +752,8 @@ function toPrefab(rawItem: SectorItem<ItemType.Prefab>): Prefab {
     ferryLinkUid: rawItem.ferryLink || undefined,
     nodeUids: rawItem.nodeUids,
     originNodeIndex: rawItem.originIndex,
+    variant: rawItem.variant,
+    parts: rawItem.parts,
   };
 }
 
@@ -846,7 +848,19 @@ function toTrigger(rawItem: SectorItem<ItemType.Trigger>): Trigger {
     secret: (rawItem.flags & 0x00_04_00_00) !== 0 ? true : undefined,
     actions: [...actionsMap.entries()],
     nodeUids: rawItem.nodeUids,
+    overrides: rawItem.actions.map(a => ({
+      action: a.action,
+      values: a.overrideValues.map(uint32ToFloat32),
+      params: a.override ? a.override.params : [],
+    })),
+    radius: rawItem.radius,
   };
+}
+
+const float32View = new DataView(new ArrayBuffer(4));
+function uint32ToFloat32(n: number): number {
+  float32View.setUint32(0, n, true);
+  return float32View.getFloat32(0, true);
 }
 
 // returns `undefined` if no text
@@ -956,6 +970,7 @@ function toNode(rawNode: SectorNode): Node {
     backwardItemUid: rawNode.backwardItemUid,
     forwardCountryId: (rawNode.flags & 0x00_00_ff_00) >> 8,
     backwardCountryId: (rawNode.flags & 0x00_ff_00_00) >> 16,
+    flags: rawNode.flags,
     // playerVehicleTypeChange: isBitSetU32(rawNode.flags, 4) ? true : undefined,
     // forwardTruck: isBitSetU32(rawNode.flags, 5),
     // forwardBus: isBitSetU32(rawNode.flags, 6),

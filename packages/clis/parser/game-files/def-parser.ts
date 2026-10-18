@@ -18,6 +18,7 @@ import type {
   MileageTarget,
   ModelDescription,
   PrefabDescription,
+  PrefabModel,
   RoadLook,
   Route,
   SignDescription,
@@ -27,7 +28,8 @@ import type {
 import type { JSONSchemaType } from 'ajv';
 import { logger } from '../logger';
 import { convertSiiToJson } from './convert-sii-to-json';
-import { parseModelPmg } from './model-pmg-parser';
+import { parseModelPmd } from './model-pmd-parser';
+import { parseModelPmg, parseModelPmgLocators } from './model-pmg-parser';
 import { parsePrefabPpd } from './prefab-ppd-parser';
 import type { Entries } from './scs-archive';
 import { parseSii } from './sii-parser';
@@ -627,11 +629,57 @@ function processPrefabJson(
     prefabs.set(token, {
       path,
       ...ppd,
+      model: path.includes(TOLL_PREFAB_DIR)
+        ? readPrefabModel(path, entries)
+        : undefined,
     });
     //      console.log(path);
     //      toRoadSegmentsAndPolygons(prefabs.get(token)!);
   }
   return prefabs;
+}
+
+// Toll prefabs: their model's hookups (`tollgate.*` booths) and variants
+// tell which toll lanes a placed prefab actually has. Reading every
+// prefab's .pmg would be slow, so only these are read.
+const TOLL_PREFAB_DIR = '/tollgate/';
+
+function readPrefabModel(
+  ppdPath: string,
+  entries: Entries,
+): PrefabModel | undefined {
+  const pmgFile = entries.files.get(ppdPath.replace(/\.ppd$/, '.pmg'));
+  if (!pmgFile) {
+    logger.warn(`could not find pmg file for ${ppdPath}`);
+    return undefined;
+  }
+  const { parts, locators } = parseModelPmgLocators(pmgFile.read());
+  const pmdFile = entries.files.get(ppdPath.replace(/\.ppd$/, '.pmd'));
+  const pmd = pmdFile ? parseModelPmd(pmdFile.read()) : undefined;
+  if (!pmd) {
+    logger.warn(`could not find pmd file for ${ppdPath}`);
+  }
+  return {
+    parts,
+    hookups: locators.flatMap(l =>
+      l.hookup != null
+        ? [
+            {
+              hookup: l.hookup,
+              x: l.x,
+              y: l.y,
+              z: l.z,
+              rotation: l.rotation,
+              part: l.part,
+            },
+          ]
+        : [],
+    ),
+    looks: pmd?.looks ?? [],
+    variants: pmd?.variants ?? [],
+    attributes: pmd?.attributes.map(a => a.name) ?? [],
+    values: pmd?.values ?? [],
+  };
 }
 
 function processSignJson(obj: SignSii): Map<string, SignDescription> {

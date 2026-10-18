@@ -24,6 +24,9 @@ export type Node = Readonly<{
   backwardItemUid: bigint;
   forwardCountryId: number;
   backwardCountryId: number;
+  // raw node flags (e.g. bit 25, 0x02_00_00_00: node inside a city, where
+  // the game's distance scale is the city one)
+  flags?: number;
 }>;
 
 export type City = Readonly<{
@@ -333,6 +336,9 @@ export type Prefab = BaseItem &
     nodeUids: readonly bigint[];
     originNodeIndex: number;
     ferryLinkUid?: bigint;
+    // model variant and additional parts set on the map item
+    variant?: string;
+    parts?: readonly string[];
   }>;
 
 export type MapArea = BaseItem &
@@ -451,7 +457,18 @@ export type Trigger = BaseItem &
     // [action token, params] tuples
     actions: [string, readonly string[]][];
     nodeUids: readonly bigint[];
+    // every action in file order (`actions` above is deduplicated), with
+    // its override values read as float32 (e.g. toll prices)
+    overrides?: readonly TriggerActionOverride[];
+    // radius of a single-node trigger (circle centered on the node)
+    radius?: number;
   }>;
+
+export type TriggerActionOverride = Readonly<{
+  action: string;
+  values: readonly number[];
+  params: readonly string[];
+}>;
 
 export type Model = BaseItem &
   Readonly<{
@@ -607,6 +624,28 @@ export interface PrefabDescription {
     cycle: number;
     profile: string;
   }[];
+  // hookup locators of the prefab's model (.pmg) and per-variant attribute
+  // values of its descriptor (.pmd). Only read for toll prefabs.
+  model?: PrefabModel;
+}
+
+export interface PrefabModel {
+  parts: string[];
+  hookups: {
+    hookup: string;
+    x: number;
+    y: number;
+    z: number;
+    // raw .pmg quaternion, in file order
+    rotation: [number, number, number, number];
+    // index into `parts`, -1 if none
+    part: number;
+  }[];
+  looks: string[];
+  variants: string[];
+  attributes: string[];
+  // values[variantIndex][attributeIndex]
+  values: number[][];
 }
 
 export interface SignDescription {

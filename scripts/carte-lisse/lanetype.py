@@ -1,7 +1,7 @@
 # road type of the lanes drawn for prefabs not drawn by connectors (lanes2.geojson):
 # a junction prefab whose roads are all motorway (or all divided) keeps that colour;
-# anything else (depots, service areas, mixed junctions) is local, except a lane whose
-# two ends both meet a motorway/divided road.
+# depots, service areas and other non-junction prefabs are local; in a mixed junction a lane
+# keeps motorway/divided only when its two ends both meet that type.
 import json,math,numpy as np,collections
 from shapely.geometry import LineString,Point
 from shapely.strtree import STRtree
@@ -35,7 +35,8 @@ for f in cur:
         rt=whole
         if rt is None:
             rt='local'
-            for typ in ('freeway','divided'):
+            # depots, service areas and other non-junction prefabs: always local
+            for typ in (('freeway','divided') if junc else ()):
                 if typ in a and typ in z: rt=typ; break
         c[(junc,rt)]+=1
         out.append({'type':'Feature','properties':{'roadType':rt},'geometry':{'type':'LineString','coordinates':pp}})

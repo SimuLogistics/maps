@@ -55,7 +55,7 @@ const style = {version:8,sources:{
   ...layersFor('old','o-'), ...layersFor('neu','n-'),
   {id:'n-plaza',type:'fill',source:'neu','source-layer':'plazas',paint:{'fill-color':'#e8a33d'}},
   {id:'n-plaza-l',type:'line',source:'neu','source-layer':'plazas',maxzoom:11,paint:{'line-color':'#e8a33d','line-width':['interpolate',['linear'],['zoom'],6,1,10,2]}},
-  {id:'n-lanes',type:'line',source:'lanes','source-layer':'lanes',minzoom:10,layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':'#e8a33d','line-width':LANE_W}},
+  {id:'n-lanes',type:'line',source:'lanes','source-layer':'lanes',minzoom:10,layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':roadColor,'line-width':LANE_W}},
   {id:'n-shape-top',type:'fill',source:'neu','source-layer':'ets2',filter:['all',['==',['get','type'],'prefab'],['in',['get','color'],['literal',[1,2]]]],paint:{'fill-color':shapeColor}},
   {id:'dots',type:'circle',source:'neu','source-layer':'ets2',filter:['==',['get','type'],'road'],minzoom:12,layout:{visibility:'none'},paint:{'circle-radius':2,'circle-color':'#ff3d7f'}},
   {id:'dots-l',type:'circle',source:'lanes','source-layer':'lanes',minzoom:12,layout:{visibility:'none'},paint:{'circle-radius':1.5,'circle-color':'#7ee0a0'}},

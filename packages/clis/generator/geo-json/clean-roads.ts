@@ -320,6 +320,9 @@ export function cleanRoads(
   for (const p of prefabs.values()) {
     const desc = prefabDescriptions.get(p.token);
     if (!desc) continue;
+    // Hidden prefabs (unreleased states, off-map stubs) keep their own
+    // hidden road strings: redrawing them as connectors/lanes would show them.
+    if (p.hidden) continue;
     const path = (desc as { path?: string }).path ?? '';
     const tx = (pos: Position) => toMapPosition(pos, p, desc, nodes) as P;
     const lanes: P[][] = desc.navCurves.map(c =>

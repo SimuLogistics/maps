@@ -141,12 +141,10 @@ export function parseDefFiles(entries: Entries, application: 'ats' | 'eut2') {
           convertSiiToJson(path, entries, CountrySiiSchema),
         );
         if (partialCountry) {
+          const speedLimitsPath = path.replace('.sui', '/speed_limits.sii');
           const truckSpeedLimits = processSpeedLimitJson(
-            convertSiiToJson(
-              path.replace('.sui', '/speed_limits.sii'),
-              entries,
-              SpeedLimitSiiSchema,
-            ),
+            convertSiiToJson(speedLimitsPath, entries, SpeedLimitSiiSchema),
+            speedLimitsPath,
           );
           countries.set(partialCountry.token, {
             ...partialCountry,
@@ -415,18 +413,29 @@ function toLaneSpeedClass(str: string): LaneSpeedClass {
   return lsc;
 }
 
-function processSpeedLimitJson(obj: SpeedLimitsSii) {
+function processSpeedLimitJson(obj: SpeedLimitsSii, path: string) {
   const { laneSpeedClass, limit, maxLimit, urbanLimit } =
     obj.countrySpeedLimit['.speed_limit.truck'];
 
-  // HACK: extra validation that isn't expressed in schema
-  assert(
-    [limit, maxLimit, urbanLimit].every(
-      array => array.length === laneSpeedClass.length,
-    ),
+  // The arrays are parallel, but some files (ATS 1.61) don't give every
+  // value for every lane class: keep the classes that are complete instead
+  // of failing the whole parse (callers fall back to `localRoad`).
+  const complete = Math.min(
+    laneSpeedClass.length,
+    limit.length,
+    maxLimit.length,
+    urbanLimit.length,
   );
+  if (complete !== laneSpeedClass.length) {
+    logger.warn(
+      `${path}: speed limit arrays differ in length`,
+      `(lane_speed_class ${laneSpeedClass.length}, limit ${limit.length},`,
+      `max_limit ${maxLimit.length}, urban_limit ${urbanLimit.length});`,
+      `keeping ${laneSpeedClass.slice(0, complete).join(', ')}`,
+    );
+  }
 
-  return laneSpeedClass.reduce((obj, className, index) => {
+  return laneSpeedClass.slice(0, complete).reduce((obj, className, index) => {
     obj[toLaneSpeedClass(className)] = {
       limit: limit[index],
       maxLimit: maxLimit[index],

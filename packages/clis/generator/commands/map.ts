@@ -213,7 +213,24 @@ export function handler(args: BuilderArguments<typeof builder>) {
 
       logger.log(`running tippecanoe to generate ${type} file...`);
       logger.info('  ', cmd);
-      execSync(cmd);
+      try {
+        execSync(cmd);
+      } catch (err) {
+        // tippecanoe's own message is only in the log file: show its end,
+        // otherwise a failure says no more than the exit code.
+        const tail = fs.existsSync(tmpTilesLog)
+          ? fs
+              .readFileSync(tmpTilesLog, 'utf-8')
+              .trimEnd()
+              .split('\n')
+              .slice(-30)
+          : [];
+        logger.error('tippecanoe failed, end of its output:');
+        for (const line of tail) {
+          logger.error(`  ${line}`);
+        }
+        throw err;
+      }
       logger.log(
         '\n',
         'tippecanoe output:\n',

@@ -195,8 +195,14 @@ export function handler(args: BuilderArguments<typeof builder>) {
         // recouvre les gaps visibles aux frontières de tiles sur les
         // routes locales zoomées au prix d'un pmtiles ~+10% plus gros.
         // Overridable via `TIPPECANOE_BUFFER` env (cf. refresh-map.mjs).
-        `-b ${process.env.TIPPECANOE_BUFFER ?? '10'}` +
-        ` --force`;
+        `-b ${process.env.TIPPECANOE_BUFFER ?? '10'} ` +
+        // Since the clean roads (connectors, lanes, toll plazas), the
+        // zoom 4 tiles over central Europe go past tippecanoe's 500 kB /
+        // 200,000 feature limits, and with -B 4 nothing may be dropped:
+        // it then writes no zoom at all. Lift the limits rather than drop
+        // features, so the map looks the same at every zoom.
+        `--no-tile-size-limit --no-feature-limit ` +
+        `--force`;
 
       // tippecanoe has no native Windows build. Set TIPPECANOE_DOCKER
       // to an image name (see docker/tippecanoe.Dockerfile in the

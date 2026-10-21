@@ -18,8 +18,12 @@ texture (1.8% of road points land on water, mostly bridges and ferry ramps).
 Great Britain is the exception: the texture draws it at real-world scale while
 UK game content is ~1/0.75 bigger, so UK sectors get their own transform.
 
-Country borders are traced the same way: the texture draws them as thin light
-lines over land. Outside the texture, resources/countries.geojson is kept.
+Country borders: over the texture, the real-world ones from
+resources/countries.geojson fall on the thin light lines the texture draws
+(~97% of points within one pixel) and are kept, straight, cut where they cross
+water. In the UK sectors they don't line up (different scale), so the
+borders there are traced from the texture. Outside the texture,
+resources/countries.geojson is kept as is.
 
 Usage:
   python3 build_water.py --tiles <dir with map0..3.png> \
@@ -94,6 +98,20 @@ def wgs84_to_game(lon, lat):
     x = np.where(is_uk, x / UK_SCALE - CALAIS[0] / 2, x)
     y = np.where(is_uk, y / UK_SCALE - CALAIS[1] / 2, y)
     return x + MAP_OFFSET[0], y + MAP_OFFSET[1], is_uk
+
+
+def uk_zone(step=0.02):
+    """The UK sectors (Great Britain and Ireland), as a lon/lat polygon."""
+    lon0, lon1, lat0, lat1 = -12.0, 3.0, 49.0, 62.0
+    lon, lat = np.meshgrid(np.arange(lon0, lon1, step), np.arange(lat1, lat0, -step))
+    mask = wgs84_to_game(lon, lat)[2].astype(np.uint8)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    polys = [
+        Polygon([(lon0 + x * step, lat1 - y * step) for x, y in c.reshape(-1, 2)])
+        for c in contours
+        if len(c) >= 3
+    ]
+    return unary_union(polys).buffer(step)
 
 
 def is_uk_sector(x, y):
@@ -473,6 +491,7 @@ def main():
     if not args.countries:
         return
     coverage = vectorize(inside)
+    uk = uk_zone()
     drawn = extract_borders(tex, sea, center, size_km)
     real = [
         (f['properties'].get('name'), shape(f['geometry']))
@@ -483,15 +502,22 @@ def main():
         if name in UNDRAWN_BORDERS:
             g = align_to_drawn(g, [r for _, r in real], drawn)
         else:
-            g = g.difference(coverage)
+            # Over the texture, outside the UK sectors, the real-world borders
+            # fall on the drawn lines (~97% within one texture pixel) and stay
+            # straight: keep them, cut where they cross water.
+            inner = g.intersection(coverage).difference(uk).difference(merged)
+            g = unary_union([g.difference(coverage), inner])
         if not g.is_empty:
             features.append(
                 {'type': 'Feature', 'properties': {'name': name}, 'geometry': rounded(g)}
             )
+    # The UK sectors don't use the real-world scale: their borders stay traced.
     for line in drawn:
-        features.append(
-            {'type': 'Feature', 'properties': {'name': None}, 'geometry': rounded(line)}
-        )
+        line = line.intersection(uk)
+        if not line.is_empty:
+            features.append(
+                {'type': 'Feature', 'properties': {'name': None}, 'geometry': rounded(line)}
+            )
     write_collection(args.countries_out, 'countries', features)
 
 

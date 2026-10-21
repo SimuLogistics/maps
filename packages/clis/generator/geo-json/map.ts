@@ -261,6 +261,11 @@ export function convertToMapGeoJson(
   logger.log('creating roads and quadtree of prefab-adjacent roads...');
   const roadFeatures: RoadFeature[] = [];
   for (const r of roads.values()) {
+    // Hidden roads/prefabs are left out of the game's own UI map (unreleased
+    // states, off-map stubs, decor): leave them out of the generated map too.
+    if (r.hidden) {
+      continue;
+    }
     const fs = roadToFeature(
       r,
       assertExists(roadLooks.get(r.roadLookToken)),
@@ -338,6 +343,9 @@ export function convertToMapGeoJson(
   const prefabAndRoadFeatures: (PrefabFeature | RoadFeature)[] = [];
 
   for (const p of prefabs.values()) {
+    if (p.hidden) {
+      continue;
+    }
     const comps = assertExists(prefabComponents.get(p.token));
     if (!options.skipCoalescing && comps.isVJunction) {
       vJunctionList.add(p);

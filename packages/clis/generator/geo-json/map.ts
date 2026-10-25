@@ -633,7 +633,29 @@ export function convertToMapGeoJson(
   const countryFeatures = countries.values().map(countryToFeature);
 
   logger.log('creating pois...');
-  const poiFeatures = pois.map(p => poiToFeature(p));
+  // Facilities of hidden prefabs are left out with the prefabs themselves
+  // (see above): they would float, alone, over unreleased areas.
+  const hiddenPrefabNodes = new Set(
+    prefabs
+      .values()
+      .filter(p => p.hidden)
+      .flatMap(p => p.nodeUids),
+  );
+  const isHiddenPoi = (p: Poi): boolean => {
+    if (p.type !== 'facility') {
+      return false;
+    }
+    if ('prefabUid' in p) {
+      return prefabs.get(p.prefabUid)?.hidden === true;
+    }
+    return (
+      p.fromItemType === 'prefab' &&
+      p.itemNodeUids.some(uid => hiddenPrefabNodes.has(uid))
+    );
+  };
+  const poiFeatures = pois
+    .filter(p => !isHiddenPoi(p))
+    .map(p => poiToFeature(p));
 
   logger.log('creating traffic-y features...');
   const trafficFeatures = createTrafficFeatures(
@@ -1432,8 +1454,8 @@ function prefabToFeatures(
           }
           if (nearestRoad && roadLookMap.has(nearestRoad.roadLookToken)) {
             nearestRoadType =
-            nearestRoad.roadType ??
-            getRoadType(roadLookMap.get(nearestRoad.roadLookToken)!);
+              nearestRoad.roadType ??
+              getRoadType(roadLookMap.get(nearestRoad.roadLookToken)!);
           }
         }
       }

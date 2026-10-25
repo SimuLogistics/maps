@@ -19,8 +19,11 @@ Differences with ETS2:
   of countries.geojson) fall on the texture's lines (97% of points within one
   pixel) and are straight. They are clipped to the texture and cut where they
   cross water.
-- Outputs only cover the texture: `land` is its outline (drawn opaque over
-  any world layer below), then `water`, `states` and `countries`.
+- Outputs only cover the texture: `land` (drawn opaque over any world layer
+  below), then `water`, `states` and `countries`. `land` is the texture minus
+  its sea, widened by LAND_OVERLAP under the water: the whole outline would
+  leave a hairline (its antialiased edge) across the ocean wherever the
+  texture's border runs through the sea.
 
 Usage:
   python3 build_ats_water.py --tiles <snapshot>/map/ui-texture \
@@ -56,6 +59,13 @@ GAME_SCALE = 20
 OPEN_PX = 7
 # ~250 km²: smaller lakes go away with the spots left at border junctions.
 MIN_SEA_PX = 150
+# Degrees (~5 km) that `land` reaches under `water`, which is drawn on top:
+# their shared coast shows no gap.
+LAND_OVERLAP = 0.05
+# Degrees (~10 km): the traced sea stops a little short of the texture's
+# border, which leaves a thin strip of land along it; an opening of this
+# radius removes it (and islets narrower than ~20 km, left to the layer below).
+LAND_MIN_HALF_WIDTH = 0.1
 
 
 def game_to_wgs84(x, y):
@@ -142,7 +152,13 @@ def main():
     def out(name):
         return os.path.join(args.out_dir, f'ats-{name}.geojson')
 
-    bw.write_collection(out('land'), 'land', [feat(extent)])
+    land = (
+        extent.difference(water_poly)
+        .buffer(-LAND_MIN_HALF_WIDTH)
+        .buffer(LAND_MIN_HALF_WIDTH + LAND_OVERLAP)
+        .intersection(extent)
+    )
+    bw.write_collection(out('land'), 'land', [feat(land)])
     bw.write_collection(out('water'), 'water', [feat(water_poly)])
     bw.write_collection(out('states'), 'states', [feat(states)])
     bw.write_collection(out('countries'), 'countries', [feat(countries)])

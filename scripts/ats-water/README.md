@@ -8,10 +8,12 @@ the real-world `states.geojson` and the US borders of `countries.geojson`:
 they fall on the texture's own lines (97% of points within one pixel) and
 stay straight. They are cut where they cross water.
 
-The outputs only cover the texture (North America). `ats-land` is the outline
-of the texture: drawn opaque, it hides any world layer below (for example the
-real-world coastline of the ETS2 base layer), so the two games can share one
-map with one base layer each.
+The outputs only cover the texture (North America). `ats-land` is the land of
+the texture (its sea excluded, widened by ~5 km under `ats-water`): drawn
+opaque, it hides any world layer below (for example the real-world coastline
+of the ETS2 base layer), so the two games can share one map with one base
+layer each. It leaves out the sea so that the texture's border, where it runs
+through the ocean, draws no line.
 
 ## Inputs
 

@@ -20,6 +20,7 @@ import {
   fromWgs84ToAtsCoords,
   fromWgs84ToEts2Coords,
 } from '@truckermudgeon/map/projections';
+import type { PrefabDescription } from '@truckermudgeon/map/types';
 import type { GeoJSON } from 'geojson';
 import polygonClipping from 'polygon-clipping';
 import RBush from 'rbush';
@@ -362,26 +363,20 @@ export function cleanRoads(
     const world = p.nodeUids.map((_, k) =>
       nodes.get(p.nodeUids[(k - p.originNodeIndex + n) % n]),
     );
-    const pairs = new Map<string, { i: number; j: number; s: P[]; e: P[] }>();
+    const pairs = new Set<string>();
     for (const [i, ls] of laneInfo) {
       for (const lane of ls) {
         for (const br of lane.branches) {
           const j = br.targetNodeIndex;
           if (!world[i] || !world[j] || i === j || br.curvePoints.length < 2)
             continue;
-          const key = `${i}-${j}`;
-          let e = pairs.get(key);
-          if (!e) pairs.set(key, (e = { i, j, s: [], e: [] }));
-          e.s.push(tx(br.curvePoints[0]));
-          e.e.push(tx(br.curvePoints[br.curvePoints.length - 1]));
+          pairs.add(`${i}-${j}`);
         }
       }
     }
-    const mean = (ps: P[]): P => [
-      ps.reduce((s, q) => s + q[0], 0) / ps.length,
-      ps.reduce((s, q) => s + q[1], 0) / ps.length,
-    ];
-    for (const { i, j, s, e } of pairs.values()) {
+    const ends = desc.nodes.map(nd => carriagewayEnds(desc, nd, tx));
+    for (const key of pairs) {
+      const [i, j] = key.split('-').map(Number);
       const a = world[i]!,
         b = world[j]!;
       const dx = b.x - a.x,
@@ -390,8 +385,8 @@ export function cleanRoads(
         Math.cos(r) * dx + Math.sin(r) * dy >= 0 ? r : r + Math.PI;
       info.connectors.push({
         pts: hermite([a.x, a.y], fix(a.rotation), [b.x, b.y], fix(b.rotation)),
-        sh: mean(s),
-        eh: mean(e),
+        sh: ends[i].into,
+        eh: ends[j].outOf,
       });
     }
   }
@@ -416,6 +411,9 @@ export function cleanRoads(
       const k = regIdx.nearest(hint, 6);
       if (k && dist(k.q, node) < 25)
         return { p: k.q, props: regular[k.line].props };
+      // no road here (two prefabs meet): end where the carriageway is, so
+      // both prefabs' connectors meet there instead of pinching on the node.
+      return { p: hint, props: undefined };
     }
     return { p: node, props: undefined };
   };
@@ -659,6 +657,53 @@ export function cleanRoads(
         },
       });
   geoJson.features = out as GeoJSON.Feature[];
+}
+
+/** Space between two carriageways from which they are drawn apart. */
+const MIN_MEDIAN = 3;
+
+/**
+ * Where a prefab node's carriageways are, from its lanes' ends: `into` for the
+ * lanes entering the prefab, `outOf` for the ones leaving it. Without a median
+ * (a road drawn as one line) both are the middle of all lanes.
+ */
+function carriagewayEnds(
+  desc: PrefabDescription,
+  node: PrefabDescription['nodes'][number],
+  tx: (pos: Position) => P,
+): { into: P; outOf: P } {
+  const pos = (c: { x: number; y: number }) => tx([c.x, c.y]);
+  const into = node.inputLanes.flatMap(ci => {
+    const c = desc.navCurves[ci];
+    return c ? [pos(c.start)] : [];
+  });
+  const outOf = node.outputLanes.flatMap(ci => {
+    const c = desc.navCurves[ci];
+    return c ? [pos(c.end)] : [];
+  });
+  const all = [...into, ...outOf];
+  if (!all.length) {
+    const at = tx([node.x, node.y]);
+    return { into: at, outOf: at };
+  }
+  const middle = mean(all);
+  if (!into.length || !outOf.length) return { into: middle, outOf: middle };
+  // lanes a lane width apart are neighbors; a gap of a lane width plus the
+  // median between the closest lanes of each side makes two carriageways.
+  let gap = Infinity;
+  for (const a of into) for (const b of outOf) gap = Math.min(gap, dist(a, b));
+  return gap >= LANE_WIDTH + MIN_MEDIAN
+    ? { into: mean(into), outOf: mean(outOf) }
+    : { into: middle, outOf: middle };
+}
+
+const LANE_WIDTH = 4.5;
+
+function mean(ps: P[]): P {
+  return [
+    ps.reduce((s, q) => s + q[0], 0) / ps.length,
+    ps.reduce((s, q) => s + q[1], 0) / ps.length,
+  ];
 }
 
 type ToGame = (c: GeoJSON.Position[]) => P[];

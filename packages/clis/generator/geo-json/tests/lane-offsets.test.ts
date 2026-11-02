@@ -115,7 +115,7 @@ function mapData(layouts: [string, number[], number[]][]) {
     roads,
     prefabs,
     prefabDescriptions,
-    roadLooks: new Map([['hw', look]]),
+    roadLooks: new Map<string, RoadLook>([['hw', look]]),
   };
 }
 
@@ -156,6 +156,24 @@ describe('measureLookLaneOffsets', () => {
     expect(looks.get('hw')?.forward).toBe(-6.5);
     expect(looks.get('hw')?.agreement).toBe(1);
     expect([...leftHandRoads]).toEqual([23n]);
+  });
+
+  test('measures one-way looks, on the side of the roads around them', () => {
+    const data = mapData([
+      ['a', [4.25, 8.75], []],
+      ['b', [4.25, 8.75], []],
+      ['c', [4.25, 8.75], []],
+    ]);
+    data.roadLooks.set('hw', {
+      lanesLeft: [],
+      lanesRight: [motorway, motorway],
+    });
+    const { looks } = measureLookLaneOffsets(data);
+    expect(looks.get('hw')).toMatchObject({
+      forward: -6.5,
+      backward: -6.5,
+      median: 0,
+    });
   });
 
   test('drops looks with too few samples or too little agreement', () => {

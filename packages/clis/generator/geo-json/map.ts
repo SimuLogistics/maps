@@ -107,6 +107,12 @@ export function convertToMapGeoJson(
   options: {
     includeDebug: boolean;
     skipCoalescing: boolean;
+    /**
+     * Don't join roads with the game's in-prefab UI paths: clean roads redraws
+     * prefabs, and can only replace those paths while they're features of
+     * their own.
+     */
+    keepPrefabPathsApart?: boolean;
   },
 ): AtsGeoJson {
   logger.log('normalizing dlcGuard values...');
@@ -272,6 +278,8 @@ export function convertToMapGeoJson(
 
   logger.log('creating roads and quadtree of prefab-adjacent roads...');
   const roadFeatures: RoadFeature[] = [];
+  // roads drawn where their lanes are: v-junctions must not move their ends.
+  const measuredRoadFeatures = new Set<RoadFeature>();
   for (const r of roads.values()) {
     // Hidden roads/prefabs are left out of the game's own UI map (unreleased
     // states, off-map stubs, decor): leave them out of the generated map too.
@@ -286,8 +294,13 @@ export function convertToMapGeoJson(
       laneOffsets.looks.get(r.roadLookToken),
       laneOffsets.leftHandRoads.has(r.uid),
     );
+    const measured =
+      laneOffsets.looks.has(r.roadLookToken) &&
+      !r.leftLanesVariant &&
+      !r.rightLanesVariant;
     for (const f of fs) {
       roadFeatures.push(f);
+      if (measured) measuredRoadFeatures.add(f);
       if (prefabNodeUids.has(r.startNodeUid)) {
         const node = assertExists(nodes.get(r.startNodeUid));
         contextTree.add({
@@ -512,18 +525,16 @@ export function convertToMapGeoJson(
           //logger.warn('v-joint fallback search at', `${coords[1]}/${coords[0]}`);
         }
 
-        const canMove = ({
-          roadFeature: {
-            id,
-            properties: { leftLanes, rightLanes },
-          },
-        }: QtRoadEntry) =>
+        const canMove = ({ roadFeature }: QtRoadEntry) =>
           // can't move prefab roads, because i don't want to deal with having to
           // move multiple-prefabs that terminate at a single point, e.g.
           // /38.54968/-122.09539
-          !id.includes('road') &&
+          !roadFeature.id.includes('road') &&
           // one-way road
-          (leftLanes === 0 || rightLanes === 0);
+          (roadFeature.properties.leftLanes === 0 ||
+            roadFeature.properties.rightLanes === 0) &&
+          // already ends where its lanes do: moving it would bend its end
+          !measuredRoadFeatures.has(roadFeature);
 
         if (roadAData.roadFeature === roadBData.roadFeature) {
           //const coords = normalize(roadAData.startOrEnd);
@@ -563,7 +574,7 @@ export function convertToMapGeoJson(
 
   const processedRoadFeatures = options.skipCoalescing
     ? roadFeatures
-    : coalesceRoadFeatures(roadFeatures);
+    : coalesceRoadFeatures(roadFeatures, !!options.keepPrefabPathsApart);
   if (options.skipCoalescing) {
     logger.info('skipped coalescing road features and combining v-junctions.');
     logger.info(processedRoadFeatures.length, 'total road features.');
@@ -911,7 +922,10 @@ function createExitFeatures(
  * Joins adjacent `roadFeature`s together if their ends are close to each other,
  * and if their properties are compatible.
  */
-function coalesceRoadFeatures(roadFeatures: RoadFeature[]): RoadFeature[] {
+function coalesceRoadFeatures(
+  roadFeatures: RoadFeature[],
+  keepPrefabPathsApart: boolean,
+): RoadFeature[] {
   logger.log('coalescing road features...');
 
   const heads = new Map<bigint, RoadFeature[]>();
@@ -997,8 +1011,12 @@ function coalesceRoadFeatures(roadFeatures: RoadFeature[]): RoadFeature[] {
   ): RoadFeature[] => {
     availableRoads.delete(road);
 
+    // prefab UI paths have ids like `<prefab uid>road<n>`
+    const isPath = (r: RoadFeature) => String(r.id).includes('road');
     const inRange = (a: RoadFeature, b: RoadFeature) =>
-      distance(a.geometry.coordinates[0], b.geometry.coordinates.at(-1)!) < 2.5;
+      distance(a.geometry.coordinates[0], b.geometry.coordinates.at(-1)!) <
+        2.5 &&
+      (!keepPrefabPathsApart || isPath(a) === isPath(b));
 
     if (dir === 'head') {
       const headKey = road.properties.startNodeUid;

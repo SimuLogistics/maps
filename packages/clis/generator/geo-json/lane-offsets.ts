@@ -45,6 +45,7 @@ export interface MeasuredLaneOffsets {
 }
 
 interface Sample {
+  road: bigint;
   forward: number[];
   backward: number[];
 }
@@ -157,29 +158,44 @@ export function measureLookLaneOffsets(data: {
         if (
           forward.length !== look.lanesRight.filter(isVehicleLane).length ||
           backward.length !== look.lanesLeft.filter(isVehicleLane).length ||
-          forward.length === 0 ||
-          backward.length === 0
+          forward.length + backward.length === 0
         ) {
           continue;
         }
-        // forward lanes on the normal's side: traffic drives on the left.
-        // mirror the sample so every look is measured for right-hand traffic.
-        const leftHand = mean(forward) > mean(backward);
-        sideVotes.set(
-          road.uid,
-          (sideVotes.get(road.uid) ?? 0) + (leftHand ? 1 : -1),
-        );
-        const mirror = (vs: number[]) => (leftHand ? vs.map(v => -v) : vs);
+        if (forward.length && backward.length) {
+          // forward lanes on the normal's side: traffic drives on the left.
+          const leftHand = mean(forward) > mean(backward);
+          sideVotes.set(
+            road.uid,
+            (sideVotes.get(road.uid) ?? 0) + (leftHand ? 1 : -1),
+          );
+        }
         let list = samples.get(road.roadLookToken);
         if (!list) samples.set(road.roadLookToken, (list = []));
-        list.push({ forward: mirror(forward), backward: mirror(backward) });
+        list.push({ road: road.uid, forward, backward });
       }
     }
   }
 
+  // one-way roads can't tell the side they drive on: they take the side of
+  // the two-way roads around them.
+  const leftHandRoads = spreadLeftHand(sideVotes, roadEnds);
   const looks = new Map<string, LookLaneOffsets>();
-  for (const [token, list] of samples) {
-    if (list.length < MIN_SAMPLES) continue;
+  for (const [token, raw] of samples) {
+    if (raw.length < MIN_SAMPLES) continue;
+    // mirror left-hand samples, so every look is measured for right-hand
+    // traffic; a one-way look's missing side is its other side.
+    const list = raw.map(({ road, forward, backward }) => {
+      const m = (vs: number[]) =>
+        leftHandRoads.has(road) ? vs.map(v => -v) : vs;
+      const f = m(forward.length ? forward : backward);
+      const b = m(backward.length ? backward : forward);
+      return {
+        forward: f,
+        backward: b,
+        oneWay: !forward.length || !backward.length,
+      };
+    });
     const fwd = list.map(s => mean(s.forward));
     const bwd = list.map(s => mean(s.backward));
     const forward = median(fwd);
@@ -197,7 +213,9 @@ export function measureLookLaneOffsets(data: {
       ...neighborSpacings(s.backward),
     ]);
     const laneWidth = spacings.length ? median(spacings) : DEFAULT_LANE_WIDTH;
-    const gaps = agreeing.map(s => innerGap(s.forward, s.backward));
+    const gaps = agreeing.map(s =>
+      s.oneWay ? laneWidth : innerGap(s.forward, s.backward),
+    );
     looks.set(token, {
       forward,
       backward,
@@ -207,7 +225,7 @@ export function measureLookLaneOffsets(data: {
       agreement,
     });
   }
-  return { looks, leftHandRoads: spreadLeftHand(sideVotes, roadEnds) };
+  return { looks, leftHandRoads };
 }
 
 /**

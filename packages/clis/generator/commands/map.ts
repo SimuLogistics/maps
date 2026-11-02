@@ -135,6 +135,7 @@ export function handler(args: BuilderArguments<typeof builder>) {
   const geoJson = convertToMapGeoJson(tsMapData, {
     includeDebug: args.includeDebug,
     skipCoalescing: args.skipCoalescing,
+    keepPrefabPathsApart: args.cleanRoads,
   });
   if (args.cleanRoads) {
     logger.log('cleaning roads...');

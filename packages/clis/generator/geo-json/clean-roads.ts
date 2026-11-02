@@ -334,11 +334,20 @@ export function cleanRoads(
     toll: boolean;
     junction: boolean;
     lanes: P[][];
-    connectors: { pts: P[]; sh: P; eh: P }[];
+    connectors: {
+      pts: P[];
+      sh: P;
+      eh: P;
+      sm: P;
+      em: P;
+      nodes: [number, number];
+    }[];
     /** how far its lanes reach from the carriageway centers its connectors use */
     spread: number;
     /** roads go through it (two nodes or more), not just into it */
     through: boolean;
+    /** its lanes go round in a loop (a roundabout) */
+    ring: boolean;
   }
   const infos: PrefabInfo[] = [];
   for (const p of prefabs.values()) {
@@ -364,6 +373,7 @@ export function cleanRoads(
       connectors: [],
       spread: 0,
       through: p.nodeUids.length >= 2,
+      ring: hasLoop(desc.navCurves),
     };
     infos.push(info);
     if (p.nodeUids.length < 2) continue;
@@ -402,6 +412,9 @@ export function cleanRoads(
         pts: hermite([a.x, a.y], fix(a.rotation), [b.x, b.y], fix(b.rotation)),
         sh: ends[i].into,
         eh: ends[j].outOf,
+        sm: ends[i].alone.into,
+        em: ends[j].alone.outOf,
+        nodes: [i, j],
       });
     }
   }
@@ -425,14 +438,15 @@ export function cleanRoads(
   const endIdx = new PointIndex(pathEnds);
   // `other`: the connector's other node. In a short prefab, the road at the
   // other node can be the nearest one: never snap closer to it than to `node`.
-  const snap = (node: P, hint: P, other: P) => {
+  // `alone`: where to end without a road there (see `carriagewayEnds`).
+  const snap = (node: P, hint: P, other: P, alone: P) => {
     if (dist(node, hint) < 30) {
       const k = regIdx.nearest(hint, 6);
       if (k && dist(k.q, node) < 25 && dist(k.q, node) < dist(k.q, other))
         return { p: k.q, props: regular[k.line].props };
       // no road here (two prefabs meet): end where the carriageway is, so
       // both prefabs' connectors meet there instead of pinching on the node.
-      return { p: hint, props: undefined };
+      return { p: alone, props: undefined };
     }
     return { p: node, props: undefined };
   };
@@ -441,6 +455,9 @@ export function cleanRoads(
     uid: string;
     pts: P[];
     props: Record<string, unknown>;
+    nodes: [number, number];
+    /** goes on from one node to the other, rather than turning */
+    straight: boolean;
   }
   const conns = new Map<string, Conn[]>();
   for (const info of infos) {
@@ -449,8 +466,8 @@ export function cleanRoads(
       const m = c.pts;
       const r0 = angle(m[0], m[1]),
         r1 = angle(m[m.length - 2], m[m.length - 1]);
-      const a = snap(m[0], c.sh, m[m.length - 1]),
-        b = snap(m[m.length - 1], c.eh, m[0]);
+      const a = snap(m[0], c.sh, m[m.length - 1], c.sm),
+        b = snap(m[m.length - 1], c.eh, m[0], c.em);
       if (dist(a.p, b.p) < 1) continue;
       const key = [a.p, b.p]
         .map(q => `${q[0].toFixed(1)},${q[1].toFixed(1)}`)
@@ -467,7 +484,14 @@ export function cleanRoads(
             : { roadType: 'local', leftLanes: 1, rightLanes: 1 };
       }
       const list = conns.get(info.uid) ?? [];
-      list.push({ uid: info.uid, pts: hermite(a.p, r0, b.p, r1), props: src });
+      const turn = Math.abs(Math.atan2(Math.sin(r1 - r0), Math.cos(r1 - r0)));
+      list.push({
+        uid: info.uid,
+        pts: hermite(a.p, r0, b.p, r1),
+        props: src,
+        nodes: c.nodes,
+        straight: turn < STRAIGHT_TURN,
+      });
       conns.set(info.uid, list);
     }
   }
@@ -475,7 +499,8 @@ export function cleanRoads(
   // --- prefabs drawn by connectors: every lane close to one of its connectors ---
   const simple = new Set<string>();
   for (const info of infos) {
-    if (info.toll || !info.lanes.length) continue;
+    // connectors link nodes two by two: a roundabout's ring would be lost
+    if (info.toll || info.ring || !info.lanes.length) continue;
     const cs = conns.get(info.uid);
     if (!cs) continue;
     // a few connectors per prefab: test them directly rather than build a tree
@@ -712,9 +737,19 @@ export function cleanRoads(
     flush();
   }
 
+  // At a crossing, the roads going straight through draw it: the turns
+  // between two of them would only fill its corners (the game's own map
+  // shows a plain cross). A turn into a road that stops there (a T's stem)
+  // is how that road joins: kept.
+  const turnsKept = (uid: string) => {
+    const cs = conns.get(uid) ?? [];
+    if (!infoByUid.get(uid)?.junction) return cs;
+    const through = new Set(cs.filter(c => c.straight).flatMap(c => c.nodes));
+    return cs.filter(c => c.straight || !c.nodes.every(n => through.has(n)));
+  };
   const connFeatures: Feature[] = [];
   for (const uid of simple)
-    for (const c of conns.get(uid) ?? []) {
+    for (const c of turnsKept(uid)) {
       const s = c.props;
       connFeatures.push({
         type: 'Feature',
@@ -820,20 +855,27 @@ function nearestOnLine(l: P[], p: P): P {
   return best;
 }
 
+/** Largest change of heading, in radians, of a connector going straight on. */
+const STRAIGHT_TURN = Math.PI / 6;
+
 /** Space between two carriageways from which they are drawn apart. */
 const MIN_MEDIAN = 3;
 
 /**
  * Where a prefab node's carriageways are, from its lanes' ends: `into` for the
- * lanes entering the prefab, `outOf` for the ones leaving it. Without a median
- * (a road drawn as one line) both are the middle of all lanes. `spread` is
- * how far the lanes reach from those centers.
+ * center of the lanes entering the prefab, `outOf` for the ones leaving it
+ * (with lanes one way only, both are their middle). Without a median the
+ * road at the node is one line where no road is drawn (two prefabs meet):
+ * `alone` is then the middle of all lanes, else `into` (connectors entering
+ * and leaving use their own). `spread` is how far the lanes reach from the
+ * line the connectors follow: those centers with a median, the middle of all
+ * lanes without one.
  */
 function carriagewayEnds(
   desc: PrefabDescription,
   node: PrefabDescription['nodes'][number],
   tx: (pos: Position) => P,
-): { into: P; outOf: P; spread: number } {
+): { into: P; outOf: P; alone: { into: P; outOf: P }; spread: number } {
   const pos = (c: { x: number; y: number }) => tx([c.x, c.y]);
   const into = node.inputLanes.flatMap(ci => {
     const c = desc.navCurves[ci];
@@ -846,26 +888,50 @@ function carriagewayEnds(
   const all = [...into, ...outOf];
   if (!all.length) {
     const at = tx([node.x, node.y]);
-    return { into: at, outOf: at, spread: 0 };
+    return { into: at, outOf: at, alone: { into: at, outOf: at }, spread: 0 };
   }
   const reach = (ps: P[], c: P) => Math.max(0, ...ps.map(q => dist(q, c)));
   const middle = mean(all);
-  const oneLine = { into: middle, outOf: middle, spread: reach(all, middle) };
-  if (!into.length || !outOf.length) return oneLine;
+  const one = { into: middle, outOf: middle };
+  if (!into.length || !outOf.length)
+    return { ...one, alone: one, spread: reach(all, middle) };
+  const [ci, co] = [mean(into), mean(outOf)];
   // lanes a lane width apart are neighbors; a gap of a lane width plus the
   // median between the closest lanes of each side makes two carriageways.
   let gap = Infinity;
   for (const a of into) for (const b of outOf) gap = Math.min(gap, dist(a, b));
-  if (gap < LANE_WIDTH + MIN_MEDIAN) return oneLine;
-  const [ci, co] = [mean(into), mean(outOf)];
+  // Without a median the road at the node can still be drawn as two
+  // carriageways (its look has one elsewhere, a tram in the middle…): the
+  // centers of each side's lanes still lead to the right one, or onto the
+  // road's middle line when it is drawn as one.
+  const apart = gap >= LANE_WIDTH + MIN_MEDIAN;
   return {
     into: ci,
     outOf: co,
-    spread: Math.max(reach(into, ci), reach(outOf, co)),
+    alone: apart ? { into: ci, outOf: co } : one,
+    spread: apart
+      ? Math.max(reach(into, ci), reach(outOf, co))
+      : reach(all, middle),
   };
 }
 
 const LANE_WIDTH = 4.5;
+
+/** Whether nav curves, following each one's next curves, come back round. */
+export function hasLoop(curves: readonly { nextLines: number[] }[]): boolean {
+  // 0: not seen, 1: on the current path, 2: done
+  const state = new Uint8Array(curves.length);
+  const visit = (i: number): boolean => {
+    state[i] = 1;
+    for (const j of curves[i].nextLines) {
+      if (j < 0 || j >= curves.length || j === i) continue;
+      if (state[j] === 1 || (state[j] === 0 && visit(j))) return true;
+    }
+    state[i] = 2;
+    return false;
+  };
+  return curves.some((_, i) => state[i] === 0 && visit(i));
+}
 
 function mean(ps: P[]): P {
   return [

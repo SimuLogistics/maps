@@ -11,7 +11,10 @@
 //    roads;
 //  - bridges are drawn above the roads they pass over (see road-levels.ts).
 // Everything drawn for a prefab (connectors, lanes, kept UI paths) has
-// `prefab: true`, so the map style can draw it over the roads, as the game does.
+// `prefab: true`, so the map style can draw it over the roads, as the game does,
+// and `yard: true` for the prefabs that aren't junctions (companies, service
+// areas, parkings): the style draws their yards and inner roads over the
+// roads that lead into them.
 // Everything is computed in game coordinates (metres) and converted back.
 import type { Position } from '@truckermudgeon/base/geom';
 import { toSplinePoints } from '@truckermudgeon/base/geom';
@@ -47,7 +50,7 @@ type CleanRoadsData = MappedDataForKeys<
 type Feature = GeoJSON.Feature<GeoJSON.Geometry, Record<string, unknown>>;
 
 // prefab categories (second path element) that only hold node-to-node lanes
-const JUNCTION_DIRS = [
+export const JUNCTION_DIRS = [
   'fork_temp',
   'cross_temp',
   'round_temp',
@@ -584,6 +587,10 @@ export function cleanRoads(
       );
   const joinToConnector = (p: P): P => connIdx.nearest(p, 10)?.q ?? p;
 
+  const infoByUid = new Map(infos.map(i => [i.uid, i]));
+  // the prefab a UI path belongs to: its id is `<prefab uid>road<n>`
+  const isYardPath = (f: Feature) =>
+    infoByUid.get(String(f.id).split('road')[0])?.junction === false;
   const out: Feature[] = [];
   let keptPieces = 0;
   for (const f of features) {
@@ -627,7 +634,11 @@ export function cleanRoads(
           type: 'Feature',
           id: `${f.id}p${piece++}`,
           // drawn over the roads, like the rest of the prefab
-          properties: { ...f.properties, prefab: true },
+          properties: {
+            ...f.properties,
+            prefab: true,
+            ...(isYardPath(f) ? { yard: true } : {}),
+          },
           geometry: { type: 'LineString', coordinates: w(simplify(run, 0.3)) },
           // AI lanes only show from zoom 10 (see below): until then, the
           // game's path keeps the junction drawn.
@@ -663,6 +674,7 @@ export function cleanRoads(
           secret: false,
           connector: true,
           prefab: true,
+          ...(infoByUid.get(uid)?.junction === false ? { yard: true } : {}),
         },
         geometry: { type: 'LineString', coordinates: w(c.pts) },
       });
@@ -698,6 +710,7 @@ export function cleanRoads(
         roadType: l.roadType,
         lane: true,
         prefab: true,
+        ...(l.yard ? { yard: true } : {}),
         hidden: false,
         secret: false,
         dlcGuard: 0,
@@ -917,6 +930,8 @@ function lowerConnectorTypes(features: Feature[], g: ToGame): number {
 interface TypedLane {
   pts: P[];
   roadType: RoadType;
+  /** a lane of a prefab that isn't a junction (company, service area...) */
+  yard?: boolean;
 }
 
 /** Index of the road features `typeLanes` looks at, with their feature index. */
@@ -980,7 +995,7 @@ function typeLanes(
             break;
           }
       }
-      out.push({ pts, roadType: rt });
+      out.push({ pts, roadType: rt, yard: !info.junction });
     });
   }
   return out;

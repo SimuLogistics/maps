@@ -176,6 +176,7 @@ export function handler(args: BuilderArguments<typeof builder>) {
       'lane',
       'level',
       'prefab',
+      'yard',
       'color',
       'name',
     ];

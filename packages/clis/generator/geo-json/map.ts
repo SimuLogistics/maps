@@ -61,6 +61,7 @@ import { quadtree } from 'd3-quadtree';
 import type { GeoJSON } from 'geojson';
 import { buildDlcGuardSpatialIndex, dlcGuardMapDataKeys } from '../dlc-guards';
 import { logger } from '../logger';
+import { JUNCTION_DIRS } from './clean-roads';
 import type { LookLaneOffsets } from './lane-offsets';
 import { MIN_DIVIDED_MEDIAN, measureLookLaneOffsets } from './lane-offsets';
 import { createNormalizeFeature } from './normalize';
@@ -1406,6 +1407,9 @@ function prefabToFeatures(
 
   const tx = (pos: Position) =>
     toMapPosition(pos, prefab, prefabDescription, nodes);
+  const yard = !JUNCTION_DIRS.includes(
+    (prefabDescription as { path?: string }).path?.split('/')[1] ?? '',
+  );
 
   const prefabNodes = prefab.nodeUids.map(id => assertExists(nodes.get(id)));
   const findClosestNode = (point: Position): Node | undefined =>
@@ -1428,6 +1432,8 @@ function prefabToFeatures(
           secret: prefab.secret ?? false,
           zIndex: poly.zIndex,
           color: poly.color,
+          // company, service area, parking...: drawn over the roads into it
+          ...(yard ? { yard: true } : {}),
         }),
         id: prefab.uid.toString(16) + 'poly' + i,
       };

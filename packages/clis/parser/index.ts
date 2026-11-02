@@ -1,4 +1,4 @@
-#!/usr/bin/env -S NODE_OPTIONS=--max-old-space-size=8192 npx tsx
+#!/usr/bin/env -S NODE_OPTIONS="--max-old-space-size=8192 --max-semi-space-size=128" npx tsx
 
 import { UnreachableError } from '@truckermudgeon/base/precon';
 import { writeArrayFile } from '@truckermudgeon/io';

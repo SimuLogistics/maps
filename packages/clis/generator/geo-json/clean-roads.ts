@@ -190,6 +190,17 @@ class LineIndex {
   }
 }
 
+/**
+ * Whether `p` lies within `r` of the polyline `l`. Same test as
+ * `LineIndex.any`, without building a tree: cheaper for a handful of lines.
+ */
+function nearLine(l: P[], p: P, r: number): boolean {
+  if (l.length === 1) return projectOnSegment(p, l[0], l[0]).d <= r;
+  for (let k = 1; k < l.length; k++)
+    if (projectOnSegment(p, l[k - 1], l[k]).d <= r) return true;
+  return false;
+}
+
 /** Spatial index over points. */
 class PointIndex {
   private tree = new RBush<{
@@ -450,9 +461,11 @@ export function cleanRoads(
     if (info.toll || !info.lanes.length) continue;
     const cs = conns.get(info.uid);
     if (!cs) continue;
-    const idx = new LineIndex(cs.map(c => c.pts.slice()));
+    // a few connectors per prefab: test them directly rather than build a tree
     const tol = info.junction ? 25 : 9;
-    if (info.lanes.every(l => l.every(p => idx.any(p, tol))))
+    if (
+      info.lanes.every(l => l.every(p => cs.some(c => nearLine(c.pts, p, tol))))
+    )
       simple.add(info.uid);
   }
   logger.log(
@@ -613,10 +626,12 @@ export function cleanRoads(
     `clean roads: ${lowered} connectors lowered to the type of the road they join`,
   );
   const laneOf = (info: PrefabInfo) => !info.toll && !simple.has(info.uid);
-  let lanes = typeLanes(infos.filter(laneOf), out, g);
+  // demoteIsolatedMotorways only retypes roads: the index serves both passes
+  const roads = roadLineIndex(out, g);
+  let lanes = typeLanes(infos.filter(laneOf), out, roads);
   const demoted = demoteIsolatedMotorways(out, lanes, g);
   logger.log(`clean roads: ${demoted} single-lane motorway stretches retyped`);
-  lanes = typeLanes(infos.filter(laneOf), out, g);
+  lanes = typeLanes(infos.filter(laneOf), out, roads);
 
   for (const l of lanes)
     out.push({
@@ -790,6 +805,33 @@ interface TypedLane {
   roadType: RoadType;
 }
 
+/** Index of the road features `typeLanes` looks at, with their feature index. */
+interface RoadLineIndex {
+  idx: LineIndex;
+  feat: number[];
+}
+
+function roadLineIndex(features: Feature[], g: ToGame): RoadLineIndex {
+  const lines: P[][] = [],
+    feat: number[] = [];
+  features.forEach((f, k) => {
+    const t = f.properties?.roadType as string;
+    if (
+      f.properties?.type !== 'road' ||
+      f.properties.lane ||
+      String(f.id ?? '').includes('road') ||
+      !(t in RANK) ||
+      f.geometry.type !== 'LineString'
+    )
+      return;
+    const m = g(f.geometry.coordinates);
+    if (m.length < 2) return;
+    lines.push(m);
+    feat.push(k);
+  });
+  return { idx: new LineIndex(lines), feat };
+}
+
 /**
  * Road type of the lanes drawn for prefabs not drawn by connectors: a junction
  * whose roads are all motorway (or all divided) keeps that type; depots, service
@@ -799,27 +841,11 @@ interface TypedLane {
 function typeLanes(
   infos: { junction: boolean; lanes: P[][] }[],
   features: Feature[],
-  g: ToGame,
+  roads: RoadLineIndex,
 ): TypedLane[] {
-  const lines: P[][] = [],
-    types: string[] = [];
-  for (const f of features) {
-    const t = f.properties?.roadType as string;
-    if (
-      f.properties?.type !== 'road' ||
-      f.properties.lane ||
-      String(f.id ?? '').includes('road') ||
-      !(t in RANK) ||
-      f.geometry.type !== 'LineString'
-    )
-      continue;
-    const m = g(f.geometry.coordinates);
-    if (m.length < 2) continue;
-    lines.push(m);
-    types.push(t);
-  }
-  const idx = new LineIndex(lines);
-  const at = (p: P) => new Set([...idx.within(p, 6)].map(i => types[i]));
+  // types are read now: they may have changed since the index was built
+  const types = roads.feat.map(k => features[k].properties.roadType as string);
+  const at = (p: P) => new Set([...roads.idx.within(p, 6)].map(i => types[i]));
   const out: TypedLane[] = [];
   for (const info of infos) {
     const ends = info.lanes.map(l => [at(l[0]), at(l[l.length - 1])] as const);

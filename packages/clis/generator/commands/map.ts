@@ -209,11 +209,16 @@ export function handler(args: BuilderArguments<typeof builder>) {
       // simulogistics/tools repo) to run it in a container instead —
       // the temp dir holding the geojson + output is bind-mounted at
       // /data, so all paths are passed relative to it.
+      // tippecanoe writes the tiles inside the container and only the
+      // finished file is copied to /data: writing it straight onto the
+      // Windows bind mount takes ~16 min instead of ~40 s.
       const dockerImage = process.env.TIPPECANOE_DOCKER;
+      const tilesName = path.basename(tmpTilesPath);
       const cmd = dockerImage
-        ? `docker run --rm -v "${os.tmpdir()}:/data" ${dockerImage} ` +
-          `${tippecanoeArgs} -o /data/${path.basename(tmpTilesPath)} ` +
-          `/data/${path.basename(geoJsonPath)} > ${tmpTilesLog} 2>&1`
+        ? `docker run --rm -v "${os.tmpdir()}:/data" --entrypoint sh ${dockerImage} -c ` +
+          `"tippecanoe ${tippecanoeArgs} -o /tmp/${tilesName} ` +
+          `/data/${path.basename(geoJsonPath)} && cp /tmp/${tilesName} /data/${tilesName}" ` +
+          `> ${tmpTilesLog} 2>&1`
         : `tippecanoe ${tippecanoeArgs} -o ${tmpTilesPath} ${geoJsonPath} ` +
           `> ${tmpTilesLog} 2>&1`;
 

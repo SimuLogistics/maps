@@ -152,10 +152,22 @@ describe('measureLookLaneOffsets', () => {
         ['b', ...rht],
         ['uk', [-4.25, -8.75], [4.25, 8.75]],
       ]),
+      { minLeftHandRoads: 1 },
     );
     expect(looks.get('hw')?.forward).toBe(-6.5);
     expect(looks.get('hw')?.agreement).toBe(1);
     expect([...leftHandRoads]).toEqual([23n]);
+  });
+
+  test('keeps right-hand traffic on a few odd left-hand roads', () => {
+    const { leftHandRoads } = measureLookLaneOffsets(
+      mapData([
+        ['a', ...rht],
+        ['b', ...rht],
+        ['uk', [-4.25, -8.75], [4.25, 8.75]],
+      ]),
+    );
+    expect(leftHandRoads.size).toBe(0);
   });
 
   test('measures one-way looks, on the side of the roads around them', () => {

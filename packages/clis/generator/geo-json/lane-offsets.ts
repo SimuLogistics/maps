@@ -37,6 +37,13 @@ const AGREEMENT_TOLERANCE = 0.5;
 // lane ends further than this along the road aren't on the node
 const MAX_ALONG = 2;
 const DEFAULT_LANE_WIDTH = 4.5;
+// fewest connected roads to drive on the left (see spreadLeftHand)
+const MIN_LEFT_HAND_ROADS = 50;
+
+export interface MeasureOptions {
+  /** fewest connected roads to drive on the left; tests use small maps */
+  minLeftHandRoads?: number;
+}
 
 export interface MeasuredLaneOffsets {
   looks: Map<string, LookLaneOffsets>;
@@ -60,13 +67,16 @@ const isVehicleLane = (lane: string) =>
  * A look is only kept with at least 3 samples, 90% of which agree: one
  * odd prefab shouldn't move every road of that look.
  */
-export function measureLookLaneOffsets(data: {
-  roads: ReadonlyMap<bigint, Road>;
-  roadLooks: ReadonlyMap<string, RoadLook>;
-  prefabs: ReadonlyMap<bigint, Prefab>;
-  prefabDescriptions: ReadonlyMap<string, PrefabDescription>;
-  nodes: ReadonlyMap<bigint, Node>;
-}): MeasuredLaneOffsets {
+export function measureLookLaneOffsets(
+  data: {
+    roads: ReadonlyMap<bigint, Road>;
+    roadLooks: ReadonlyMap<string, RoadLook>;
+    prefabs: ReadonlyMap<bigint, Prefab>;
+    prefabDescriptions: ReadonlyMap<string, PrefabDescription>;
+    nodes: ReadonlyMap<bigint, Node>;
+  },
+  options: MeasureOptions = {},
+): MeasuredLaneOffsets {
   const { roads, roadLooks, prefabs, prefabDescriptions, nodes } = data;
 
   // node uid -> roads (with the end that touches it)
@@ -179,7 +189,18 @@ export function measureLookLaneOffsets(data: {
 
   // one-way roads can't tell the side they drive on: they take the side of
   // the two-way roads around them.
-  const leftHandRoads = spreadLeftHand(sideVotes, roadEnds);
+  // nodes of the same prefab: roads through a junction are one network
+  const prefabNodes = new Map<bigint, readonly bigint[]>();
+  for (const p of prefabs.values()) {
+    if (p.hidden) continue;
+    for (const uid of p.nodeUids) prefabNodes.set(uid, p.nodeUids);
+  }
+  const leftHandRoads = spreadLeftHand(
+    sideVotes,
+    roadEnds,
+    prefabNodes,
+    options.minLeftHandRoads ?? MIN_LEFT_HAND_ROADS,
+  );
   const looks = new Map<string, LookLaneOffsets>();
   for (const [token, raw] of samples) {
     if (raw.length < MIN_SAMPLES) continue;
@@ -236,6 +257,8 @@ export function measureLookLaneOffsets(data: {
 function spreadLeftHand(
   sideVotes: ReadonlyMap<bigint, number>,
   roadEnds: ReadonlyMap<bigint, { road: Road }[]>,
+  prefabNodes: ReadonlyMap<bigint, readonly bigint[]>,
+  minLeftHandRoads: number,
 ): Set<bigint> {
   const known = new Map<bigint, boolean>(
     [...sideVotes].filter(([, v]) => v !== 0).map(([uid, v]) => [uid, v > 0]),
@@ -262,7 +285,37 @@ function spreadLeftHand(
     }
     frontier = next;
   }
-  return new Set([...known].filter(([, left]) => left).map(([uid]) => uid));
+  const left = new Set(
+    [...known].filter(([, isLeft]) => isLeft).map(([uid]) => uid),
+  );
+  // a country that drives on the left is a big network of roads (connected
+  // through its junctions): a few connected roads voting so are odd prefabs
+  // (ATS has some), not a country.
+  const seen = new Set<bigint>();
+  for (const start of left) {
+    if (seen.has(start)) continue;
+    const group = [start];
+    seen.add(start);
+    // `group` grows while it's walked: the for-of visits the added roads too
+    for (const uid of group) {
+      const road = byUid.get(uid);
+      if (!road) continue;
+      const near = [road.startNodeUid, road.endNodeUid].flatMap(
+        uid => prefabNodes.get(uid) ?? [uid],
+      );
+      for (const nodeUid of near) {
+        for (const { road: other } of roadEnds.get(nodeUid) ?? []) {
+          if (!left.has(other.uid) || seen.has(other.uid)) continue;
+          seen.add(other.uid);
+          group.push(other.uid);
+        }
+      }
+    }
+    if (group.length < minLeftHandRoads) {
+      for (const uid of group) left.delete(uid);
+    }
+  }
+  return left;
 }
 
 /** Center-to-center distance between the two carriageways' innermost lanes. */

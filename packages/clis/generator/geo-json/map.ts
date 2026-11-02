@@ -66,6 +66,7 @@ import type { LookLaneOffsets } from './lane-offsets';
 import { MIN_DIVIDED_MEDIAN, measureLookLaneOffsets } from './lane-offsets';
 import { createNormalizeFeature } from './normalize';
 import { ets2IsoA2, getCitiesByCountryIsoA2 } from './populated-places';
+import { motorwayRamps } from './ramp-types';
 
 type AtsGeoJson = GeoJSON.FeatureCollection<
   AtsMapGeoJsonFeature['geometry'],
@@ -277,6 +278,9 @@ export function convertToMapGeoJson(
     'with two carriageways',
   );
 
+  const ramps = motorwayRamps(tsMapData);
+  logger.info(ramps.size, 'motorway ramps with another road look');
+
   logger.log('creating roads and quadtree of prefab-adjacent roads...');
   const roadFeatures: RoadFeature[] = [];
   // roads drawn where their lanes are: v-junctions must not move their ends.
@@ -295,6 +299,7 @@ export function convertToMapGeoJson(
       laneOffsets.looks.get(r.roadLookToken),
       laneOffsets.leftHandRoads.has(r.uid),
     );
+    if (ramps.has(r.uid)) for (const f of fs) f.properties.roadType = 'freeway';
     const measured =
       laneOffsets.looks.has(r.roadLookToken) &&
       !r.leftLanesVariant &&

@@ -609,11 +609,21 @@ export function cleanRoads(
     }
     // a path's id is `<prefab uid>road<n>`
     if (pathJunctions.has(String(f.id).split('road')[0])) {
-      // a service station's paths stay over its yard (see `yard`)
-      const yard = isYardPath(f) ? { yard: true } : {};
+      // a service station's paths stay over its yard (see `yard`); the ones
+      // that don't go from one of its nodes to another run inside the
+      // station: local, whatever road the game typed them as (the motorway
+      // through it keeps its type).
+      const inYard = isYardPath(f);
+      const through =
+        f.properties?.startNodeUid != null && f.properties.endNodeUid != null;
       out.push({
         ...f,
-        properties: { ...f.properties, prefab: true, ...yard },
+        properties: {
+          ...f.properties,
+          prefab: true,
+          ...(inYard ? { yard: true } : {}),
+          ...(inYard && !through ? { roadType: 'local' } : {}),
+        },
       });
       keptPieces++;
       continue;

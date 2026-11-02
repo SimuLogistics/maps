@@ -8,7 +8,8 @@
 //  - toll plazas are drawn as one filled surface;
 //  - holes left between road ends are closed;
 //  - road types are fixed where the game reuses motorway templates on ordinary
-//    roads.
+//    roads;
+//  - bridges are drawn above the roads they pass over (see road-levels.ts).
 // Everything is computed in game coordinates (metres) and converted back.
 import type { Position } from '@truckermudgeon/base/geom';
 import { toSplinePoints } from '@truckermudgeon/base/geom';
@@ -25,6 +26,7 @@ import type { GeoJSON } from 'geojson';
 import polygonClipping from 'polygon-clipping';
 import RBush from 'rbush';
 import { logger } from '../logger';
+import { liftBridges } from './road-levels';
 
 type P = [number, number];
 type RoadType = 'freeway' | 'divided' | 'local';
@@ -32,11 +34,12 @@ const RANK: Record<string, number> = { local: 0, divided: 1, freeway: 2 };
 
 export const cleanRoadsMapDataKeys = [
   'nodes',
+  'roads',
   'prefabs',
   'prefabDescriptions',
 ] as const;
 type CleanRoadsData = MappedDataForKeys<
-  ['nodes', 'prefabs', 'prefabDescriptions']
+  ['nodes', 'roads', 'prefabs', 'prefabDescriptions']
 > & { map: 'usa' | 'europe' };
 
 type Feature = GeoJSON.Feature<GeoJSON.Geometry, Record<string, unknown>>;
@@ -656,7 +659,32 @@ export function cleanRoads(
           coordinates: poly.map(r => w(simplify(r as P[], 0.3))),
         },
       });
+  const bridges = liftBridges(out, g, w, data);
+  logger.log(`clean roads: ${bridges} crossings drawn as bridges`);
+  drawMajorRoadsLast(out);
   geoJson.features = out as GeoJSON.Feature[];
+}
+
+/**
+ * Road lines are drawn in feature order: put motorways after divided roads,
+ * and those after local roads, so a ramp or a side road joining a bigger road
+ * ends under it instead of on top of it. Other features keep their place.
+ */
+function drawMajorRoadsLast(features: Feature[]): void {
+  const slots: number[] = [];
+  features.forEach((f, k) => {
+    if (
+      f.properties?.type === 'road' &&
+      f.geometry.type === 'LineString' &&
+      (f.properties.roadType as string) in RANK
+    )
+      slots.push(k);
+  });
+  const rank = (f: Feature) => RANK[f.properties.roadType as string];
+  const roads = slots.map(k => features[k]);
+  // stable: same-type roads keep their order
+  roads.sort((a, b) => rank(a) - rank(b));
+  slots.forEach((k, i) => (features[k] = roads[i]));
 }
 
 /** Space between two carriageways from which they are drawn apart. */

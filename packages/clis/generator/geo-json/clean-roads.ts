@@ -332,6 +332,8 @@ export function cleanRoads(
     junction: boolean;
     lanes: P[][];
     connectors: { pts: P[]; sh: P; eh: P }[];
+    /** how far its lanes reach from the carriageway centers its connectors use */
+    spread: number;
   }
   const infos: PrefabInfo[] = [];
   for (const p of prefabs.values()) {
@@ -355,6 +357,7 @@ export function cleanRoads(
       junction: JUNCTION_DIRS.includes(path.split('/')[1] ?? ''),
       lanes,
       connectors: [],
+      spread: 0,
     };
     infos.push(info);
     if (p.nodeUids.length < 2) continue;
@@ -380,6 +383,7 @@ export function cleanRoads(
       }
     }
     const ends = desc.nodes.map(nd => carriagewayEnds(desc, nd, tx));
+    info.spread = Math.max(0, ...ends.map(e => e.spread));
     for (const key of pairs) {
       const [i, j] = key.split('-').map(Number);
       const a = world[i]!,
@@ -411,10 +415,12 @@ export function cleanRoads(
   }
   const regIdx = new LineIndex(regular.map(r => r.pts));
   const endIdx = new PointIndex(pathEnds);
-  const snap = (node: P, hint: P) => {
+  // `other`: the connector's other node. In a short prefab, the road at the
+  // other node can be the nearest one: never snap closer to it than to `node`.
+  const snap = (node: P, hint: P, other: P) => {
     if (dist(node, hint) < 30) {
       const k = regIdx.nearest(hint, 6);
-      if (k && dist(k.q, node) < 25)
+      if (k && dist(k.q, node) < 25 && dist(k.q, node) < dist(k.q, other))
         return { p: k.q, props: regular[k.line].props };
       // no road here (two prefabs meet): end where the carriageway is, so
       // both prefabs' connectors meet there instead of pinching on the node.
@@ -435,8 +441,8 @@ export function cleanRoads(
       const m = c.pts;
       const r0 = angle(m[0], m[1]),
         r1 = angle(m[m.length - 2], m[m.length - 1]);
-      const a = snap(m[0], c.sh),
-        b = snap(m[m.length - 1], c.eh);
+      const a = snap(m[0], c.sh, m[m.length - 1]),
+        b = snap(m[m.length - 1], c.eh, m[0]);
       if (dist(a.p, b.p) < 1) continue;
       const key = [a.p, b.p]
         .map(q => `${q[0].toFixed(1)},${q[1].toFixed(1)}`)
@@ -465,7 +471,9 @@ export function cleanRoads(
     const cs = conns.get(info.uid);
     if (!cs) continue;
     // a few connectors per prefab: test them directly rather than build a tree
-    const tol = info.junction ? 25 : 9;
+    // connectors follow the middle of each carriageway: its outer lanes are
+    // that much further from them.
+    const tol = (info.junction ? 25 : 9) + info.spread;
     if (
       info.lanes.every(l => l.every(p => cs.some(c => nearLine(c.pts, p, tol))))
     )
@@ -675,13 +683,14 @@ const MIN_MEDIAN = 3;
 /**
  * Where a prefab node's carriageways are, from its lanes' ends: `into` for the
  * lanes entering the prefab, `outOf` for the ones leaving it. Without a median
- * (a road drawn as one line) both are the middle of all lanes.
+ * (a road drawn as one line) both are the middle of all lanes. `spread` is
+ * how far the lanes reach from those centers.
  */
 function carriagewayEnds(
   desc: PrefabDescription,
   node: PrefabDescription['nodes'][number],
   tx: (pos: Position) => P,
-): { into: P; outOf: P } {
+): { into: P; outOf: P; spread: number } {
   const pos = (c: { x: number; y: number }) => tx([c.x, c.y]);
   const into = node.inputLanes.flatMap(ci => {
     const c = desc.navCurves[ci];
@@ -694,17 +703,23 @@ function carriagewayEnds(
   const all = [...into, ...outOf];
   if (!all.length) {
     const at = tx([node.x, node.y]);
-    return { into: at, outOf: at };
+    return { into: at, outOf: at, spread: 0 };
   }
+  const reach = (ps: P[], c: P) => Math.max(0, ...ps.map(q => dist(q, c)));
   const middle = mean(all);
-  if (!into.length || !outOf.length) return { into: middle, outOf: middle };
+  const oneLine = { into: middle, outOf: middle, spread: reach(all, middle) };
+  if (!into.length || !outOf.length) return oneLine;
   // lanes a lane width apart are neighbors; a gap of a lane width plus the
   // median between the closest lanes of each side makes two carriageways.
   let gap = Infinity;
   for (const a of into) for (const b of outOf) gap = Math.min(gap, dist(a, b));
-  return gap >= LANE_WIDTH + MIN_MEDIAN
-    ? { into: mean(into), outOf: mean(outOf) }
-    : { into: middle, outOf: middle };
+  if (gap < LANE_WIDTH + MIN_MEDIAN) return oneLine;
+  const [ci, co] = [mean(into), mean(outOf)];
+  return {
+    into: ci,
+    outOf: co,
+    spread: Math.max(reach(into, ci), reach(outOf, co)),
+  };
 }
 
 const LANE_WIDTH = 4.5;

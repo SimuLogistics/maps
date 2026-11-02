@@ -40,11 +40,12 @@ const RANK: Record<string, number> = { local: 0, divided: 1, freeway: 2 };
 export const cleanRoadsMapDataKeys = [
   'nodes',
   'roads',
+  'roadLooks',
   'prefabs',
   'prefabDescriptions',
 ] as const;
 type CleanRoadsData = MappedDataForKeys<
-  ['nodes', 'roads', 'prefabs', 'prefabDescriptions']
+  ['nodes', 'roads', 'roadLooks', 'prefabs', 'prefabDescriptions']
 > & { map: 'usa' | 'europe' };
 
 type Feature = GeoJSON.Feature<GeoJSON.Geometry, Record<string, unknown>>;
@@ -312,7 +313,7 @@ export function cleanRoads(
   geoJson: GeoJSON.FeatureCollection,
   data: CleanRoadsData,
 ): void {
-  const { nodes, prefabs, prefabDescriptions, map } = data;
+  const { nodes, roadLooks, prefabs, prefabDescriptions, map } = data;
   const toGame = map === 'usa' ? fromWgs84ToAtsCoords : fromWgs84ToEts2Coords;
   const toWgs = map === 'usa' ? fromAtsCoordsToWgs84 : fromEts2CoordsToWgs84;
   const g = (c: GeoJSON.Position[]) => c.map(p => toGame(p as P) as P);
@@ -349,6 +350,30 @@ export function cleanRoads(
     /** its lanes go round in a loop (a roundabout) */
     ring: boolean;
   }
+  // Nodes where rails (a tram line) leave a prefab, and where roads do.
+  const railNodes = new Set<bigint>(),
+    roadNodes = new Set<bigint>();
+  // (tram lines are often hidden roads: they still lead the lanes there)
+  for (const r of data.roads.values()) {
+    const look = roadLooks.get(r.roadLookToken);
+    const rail =
+      !!look &&
+      [...look.lanesLeft, ...look.lanesRight].every(l =>
+        l.startsWith('traffic_lane.rail.'),
+      );
+    if (!rail && r.hidden) continue;
+    for (const n of [r.startNodeUid, r.endNodeUid])
+      (rail ? railNodes : roadNodes).add(n);
+  }
+  // and hidden tram prefabs (a fork of the rails)
+  for (const p of prefabs.values()) {
+    if (!p.hidden) continue;
+    const path =
+      (prefabDescriptions.get(p.token) as { path?: string } | undefined)
+        ?.path ?? '';
+    if (/tram|rail/.test(path)) for (const n of p.nodeUids) railNodes.add(n);
+  }
+  let railConnectors = 0;
   const infos: PrefabInfo[] = [];
   for (const p of prefabs.values()) {
     const desc = prefabDescriptions.get(p.token);
@@ -358,11 +383,29 @@ export function cleanRoads(
     if (p.hidden) continue;
     const path = (desc as { path?: string }).path ?? '';
     const tx = (pos: Position) => toMapPosition(pos, p, desc, nodes) as P;
-    const lanes: P[][] = desc.navCurves.map(c =>
-      toSplinePoints(
-        { position: [c.start.x, c.start.y], rotation: c.start.rotation },
-        { position: [c.end.x, c.end.y], rotation: c.end.rotation },
-      ).map(tx),
+    const n = p.nodeUids.length;
+    // the world node of each of the description's nodes
+    const worldUids = desc.nodes.map(
+      (_, k) => p.nodeUids[(k - p.originNodeIndex + n) % n],
+    );
+    // A tram line through a prefab (into the middle of a roundabout) isn't a
+    // road: no connector leads to a node only rails leave from, and its
+    // lanes aren't drawn. A road leaving there too keeps its connectors.
+    const railIdx = new Set(
+      worldUids.flatMap((u, k) =>
+        railNodes.has(u) && !roadNodes.has(u) ? [k] : [],
+      ),
+    );
+    const rails = railCurves(desc, railIdx);
+    const lanes: P[][] = desc.navCurves.flatMap((c, k) =>
+      rails.has(k)
+        ? []
+        : [
+            toSplinePoints(
+              { position: [c.start.x, c.start.y], rotation: c.start.rotation },
+              { position: [c.end.x, c.end.y], rotation: c.end.rotation },
+            ).map(tx),
+          ],
     );
     const info: PrefabInfo = {
       uid: p.uid.toString(16),
@@ -383,21 +426,24 @@ export function cleanRoads(
     } catch {
       continue;
     }
-    const n = p.nodeUids.length;
     const world = p.nodeUids.map((_, k) =>
       nodes.get(p.nodeUids[(k - p.originNodeIndex + n) % n]),
     );
-    const pairs = new Set<string>();
+    const pairs = new Set<string>(),
+      railPairs = new Set<string>();
     for (const [i, ls] of laneInfo) {
       for (const lane of ls) {
         for (const br of lane.branches) {
           const j = br.targetNodeIndex;
           if (!world[i] || !world[j] || i === j || br.curvePoints.length < 2)
             continue;
-          pairs.add(`${i}-${j}`);
+          (railIdx.has(i) || railIdx.has(j) ? railPairs : pairs).add(
+            `${i}-${j}`,
+          );
         }
       }
     }
+    railConnectors += railPairs.size;
     const ends = desc.nodes.map(nd => carriagewayEnds(desc, nd, tx));
     info.spread = Math.max(0, ...ends.map(e => e.spread));
     for (const key of pairs) {
@@ -512,6 +558,9 @@ export function cleanRoads(
     )
       simple.add(info.uid);
   }
+  logger.log(
+    `clean roads: ${railConnectors} connectors to tram lines left out`,
+  );
   logger.log(
     `clean roads: ${simple.size} of ${infos.filter(i => i.lanes.length && !i.toll).length} prefabs drawn by connectors`,
   );
@@ -916,6 +965,29 @@ function carriagewayEnds(
 }
 
 const LANE_WIDTH = 4.5;
+
+/**
+ * The nav curves of the rails leaving a prefab at the nodes `railIdx`
+ * (description node indices): those nodes' lanes and every curve chained to
+ * them.
+ */
+function railCurves(
+  desc: PrefabDescription,
+  railIdx: Set<number>,
+): Set<number> {
+  const out = new Set<number>();
+  const todo = [...railIdx].flatMap(k => [
+    ...desc.nodes[k].inputLanes,
+    ...desc.nodes[k].outputLanes,
+  ]);
+  while (todo.length) {
+    const c = todo.pop()!;
+    if (out.has(c) || !desc.navCurves[c]) continue;
+    out.add(c);
+    todo.push(...desc.navCurves[c].nextLines, ...desc.navCurves[c].prevLines);
+  }
+  return out;
+}
 
 /** Whether nav curves, following each one's next curves, come back round. */
 export function hasLoop(curves: readonly { nextLines: number[] }[]): boolean {

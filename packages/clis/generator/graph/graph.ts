@@ -1205,10 +1205,17 @@ function getNeighborsInDirection(
 
       assert(originNodeId === originNode.uid);
       const roadLook = assertExists(context.roadLooks.get(item.roadLookToken));
+      // in left-hand traffic countries (UK), the left lanes of a road are the
+      // ones that go forward, e.g. one-way UK highways only have left lanes.
+      const country = context.countriesById.get(
+        originNode.forwardCountryId || originNode.backwardCountryId,
+      );
+      const forwardLanes =
+        country?.code === 'GB' ? roadLook.lanesLeft : roadLook.lanesRight;
+      const backwardLanes =
+        country?.code === 'GB' ? roadLook.lanesRight : roadLook.lanesLeft;
       const lanesInDirection =
-        direction === 'forward'
-          ? roadLook.lanesRight.length
-          : roadLook.lanesLeft.length;
+        direction === 'forward' ? forwardLanes.length : backwardLanes.length;
       if (lanesInDirection === 0) {
         // can't go in direction.
         return [];

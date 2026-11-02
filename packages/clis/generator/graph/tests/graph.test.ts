@@ -389,6 +389,53 @@ describe('generateGraph', () => {
       backward: [],
     });
   });
+
+  it('drives one-way roads on their left lanes in left-hand traffic countries', () => {
+    // node-10 -road-10 (left lanes only)- node-11
+    const oneWayOnTheLeft: PartialMapData = {
+      nodes: [
+        aNodeWith({
+          uid: 10n,
+          forwardItemUid: 10n,
+          backwardItemUid: 0n,
+          x: 0,
+          y: 0,
+        }),
+        aNodeWith({
+          uid: 11n,
+          forwardItemUid: 0n,
+          backwardItemUid: 10n,
+          x: 10,
+          y: 0,
+        }),
+      ],
+      roads: [
+        aRoadItemWith({
+          uid: 10n,
+          roadLookToken: 'one-way-left',
+          startNodeUid: 10n,
+          endNodeUid: 11n,
+        }),
+      ],
+      prefabs: [],
+      companies: [],
+      ferries: [],
+    };
+
+    // UK: left lanes go forward, from start to end.
+    const uk = generateGraph(createFakeMapData(oneWayOnTheLeft, 'GB')).graph;
+    expect(uk.get(10n)?.forward).toEqual([
+      expect.objectContaining({ nodeUid: 11n, direction: 'forward' }),
+    ]);
+    expect(uk.get(11n)?.backward ?? []).toEqual([]);
+
+    // elsewhere: left lanes go backward, from end to start.
+    const other = generateGraph(createFakeMapData(oneWayOnTheLeft)).graph;
+    expect(other.get(10n)?.forward ?? []).toEqual([]);
+    expect(other.get(11n)?.backward).toEqual([
+      expect.objectContaining({ nodeUid: 10n, direction: 'backward' }),
+    ]);
+  });
 });
 
 function aNodeWith({
@@ -436,7 +483,7 @@ function aRoadItemWith({
   endNodeUid,
   roadLookToken,
 }: Pick<Road, 'uid' | 'startNodeUid' | 'endNodeUid'> & {
-  roadLookToken: 'one-way' | 'two-way';
+  roadLookToken: 'one-way' | 'one-way-left' | 'two-way';
 }): Road {
   return {
     uid,
@@ -469,18 +516,17 @@ function aPrefabItemWith({
   };
 }
 
-function aRoadLook(token: 'one-way' | 'two-way'): WithToken<RoadLook> {
-  return token === 'one-way'
-    ? {
-        token,
-        lanesLeft: [],
-        lanesRight: ['local'],
-      }
-    : {
-        token,
-        lanesLeft: ['local'],
-        lanesRight: ['local'],
-      };
+function aRoadLook(
+  token: 'one-way' | 'one-way-left' | 'two-way',
+): WithToken<RoadLook> {
+  switch (token) {
+    case 'one-way':
+      return { token, lanesLeft: [], lanesRight: ['local'] };
+    case 'one-way-left':
+      return { token, lanesLeft: ['local'], lanesRight: [] };
+    case 'two-way':
+      return { token, lanesLeft: ['local'], lanesRight: ['local'] };
+  }
 }
 
 type PartialMapData = Pick<
@@ -488,7 +534,10 @@ type PartialMapData = Pick<
   'nodes' | 'roads' | 'prefabs' | 'companies' | 'ferries'
 >;
 
-function createFakeMapData(arrays: PartialMapData): MappedData<'usa'> {
+function createFakeMapData(
+  arrays: PartialMapData,
+  countryCode = 'CO',
+): MappedData<'usa'> {
   const { nodes, roads, prefabs, companies, ferries } = arrays;
   const prefabDescriptions = [prefab_us_405, d_farm_grg, d_oil_gst3];
 
@@ -520,7 +569,7 @@ function createFakeMapData(arrays: PartialMapData): MappedData<'usa'> {
     dlcGuard: 0,
   };
   const country: Country = {
-    code: 'CO',
+    code: countryCode,
     id: 1,
     name: 'Country',
     nameLocalized: 'Country',
@@ -546,6 +595,7 @@ function createFakeMapData(arrays: PartialMapData): MappedData<'usa'> {
     mapAreas: new Map(),
     roadLooks: new Map([
       ['one-way', aRoadLook('one-way')],
+      ['one-way-left', aRoadLook('one-way-left')],
       ['two-way', aRoadLook('two-way')],
     ]),
     cities: new Map([['city', city]]),

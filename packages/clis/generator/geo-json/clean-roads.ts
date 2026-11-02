@@ -616,12 +616,20 @@ export function cleanRoads(
       // the game's path and the road it continues at a prefab node aren't
       // always on the same line (the road is drawn where its lanes are):
       // start and end on it.
+      // At a divided road, the path ends on the node, between the two
+      // carriageways: take the one on the side the path comes from.
       const pts = g((f.geometry as GeoJSON.LineString).coordinates);
       const atNode = [f.properties?.startNodeUid, f.properties?.endNodeUid];
       [0, pts.length - 1].forEach((k, end) => {
-        const near =
-          atNode[end] != null ? regIdx.nearest(pts[k], 10) : undefined;
-        if (near) pts[k] = near.q;
+        if (atNode[end] == null || pts.length < 2) return;
+        const from = pts[end ? k - 1 : k + 1];
+        let best: { q: P; d: number } | undefined;
+        for (const line of regIdx.within(pts[k], 12)) {
+          const q = nearestOnLine(regular[line].pts, pts[k]);
+          const d = dist(q, from);
+          if (!best || d < best.d) best = { q, d };
+        }
+        if (best) pts[k] = best.q;
       });
       const inYard = isYardPath(f);
       const through =
@@ -766,6 +774,20 @@ export function cleanRoads(
   const bridges = liftBridges(out, g, w, data);
   logger.log(`clean roads: ${bridges} crossings drawn as bridges`);
   geoJson.features = out as GeoJSON.Feature[];
+}
+
+/** The point of a polyline closest to `p`. */
+function nearestOnLine(l: P[], p: P): P {
+  let best = l[0];
+  let bd = Infinity;
+  for (let i = 1; i < l.length; i++) {
+    const { q, d } = projectOnSegment(p, l[i - 1], l[i]);
+    if (d < bd) {
+      bd = d;
+      best = q;
+    }
+  }
+  return best;
 }
 
 /** Space between two carriageways from which they are drawn apart. */

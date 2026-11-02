@@ -500,11 +500,39 @@ export function cleanRoads(
     }
   }
 
+  // Junctions that connectors can't draw keep the game's UI paths, whole and
+  // at every zoom, as roads of their own: their AI lanes only show from
+  // zoom 10, and thin, so the junction (and the roads through it) would
+  // vanish when zoomed out.
+  const pathJunctions = new Set(
+    infos
+      .filter(
+        i => i.junction && !i.toll && i.lanes.length && !simple.has(i.uid),
+      )
+      .map(i => i.uid),
+  );
+  const families = new Map<string, number>();
+  for (const i of infos) {
+    if (!pathJunctions.has(i.uid)) continue;
+    const family = i.path.split('/').slice(1, 3).join('/');
+    families.set(family, (families.get(family) ?? 0) + 1);
+  }
+  logger.log(
+    `clean roads: ${pathJunctions.size} junctions drawn with the game's paths (${[
+      ...families,
+    ]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([f, n]) => `${f} ${n}`)
+      .join(', ')})`,
+  );
+
   // --- drop the game's UI paths where lanes, connectors or plazas cover them ---
   const kept: P[][] = [],
     simpleConns: P[][] = [],
     simpleLanes: P[][] = [];
   for (const info of infos) {
+    if (pathJunctions.has(info.uid)) continue;
     if (simple.has(info.uid)) {
       simpleLanes.push(...info.lanes);
       simpleConns.push(...(conns.get(info.uid) ?? []).map(c => c.pts));
@@ -564,20 +592,32 @@ export function cleanRoads(
       out.push(f);
       continue;
     }
+    // a path's id is `<prefab uid>road<n>`
+    if (pathJunctions.has(String(f.id).split('road')[0])) {
+      out.push({ ...f, properties: { ...f.properties, prefab: true } });
+      keptPieces++;
+      continue;
+    }
     const m = segmentize(g((f.geometry as GeoJSON.LineString).coordinates), 4);
-    const red: boolean[] = [];
+    // per segment: drawn by connectors, plazas or simple lanes (dropped),
+    // covered by the AI lanes of another prefab, or kept
+    const state: ('drop' | 'lanes' | 'keep')[] = [];
     for (let i = 0; i + 1 < m.length; i++) {
       const mid: P = [(m[i][0] + m[i + 1][0]) / 2, (m[i][1] + m[i + 1][1]) / 2];
       const pts = [mid, m[i], m[i + 1]];
-      red.push(
-        pts.every(p => keptIdx.any(p, 4)) ||
-          pts.every(p => connIdx.any(p, 7)) ||
+      state.push(
+        pts.every(p => connIdx.any(p, 7)) ||
           inPlaza(mid) ||
           connIdx.any(mid, 6) ||
-          simpleLaneIdx.any(mid, 5),
+          simpleLaneIdx.any(mid, 5)
+          ? 'drop'
+          : pts.every(p => keptIdx.any(p, 4))
+            ? 'lanes'
+            : 'keep',
       );
     }
     let run: P[] = [];
+    let runState: (typeof state)[number] = 'drop';
     let piece = 0;
     const flush = () => {
       if (run.length >= 2 && lineLength(run) >= 15) {
@@ -589,17 +629,20 @@ export function cleanRoads(
           // drawn over the roads, like the rest of the prefab
           properties: { ...f.properties, prefab: true },
           geometry: { type: 'LineString', coordinates: w(simplify(run, 0.3)) },
-        });
-        keptPieces++;
+          // AI lanes only show from zoom 10 (see below): until then, the
+          // game's path keeps the junction drawn.
+          ...(runState === 'lanes' ? { tippecanoe: { maxzoom: 9 } } : {}),
+        } as Feature);
+        if (runState === 'keep') keptPieces++;
       }
       run = [];
     };
-    red.forEach((r, i) => {
-      if (r) flush();
-      else {
-        if (!run.length) run = [m[i]];
-        run.push(m[i + 1]);
-      }
+    state.forEach((st, i) => {
+      if (st !== runState) flush();
+      runState = st;
+      if (st === 'drop') return;
+      if (!run.length) run = [m[i]];
+      run.push(m[i + 1]);
     });
     flush();
   }
@@ -638,7 +681,8 @@ export function cleanRoads(
   logger.log(
     `clean roads: ${lowered} connectors lowered to the type of the road they join`,
   );
-  const laneOf = (info: PrefabInfo) => !info.toll && !simple.has(info.uid);
+  const laneOf = (info: PrefabInfo) =>
+    !info.toll && !simple.has(info.uid) && !pathJunctions.has(info.uid);
   // demoteIsolatedMotorways only retypes roads: the index serves both passes
   const roads = roadLineIndex(out, g);
   let lanes = typeLanes(infos.filter(laneOf), out, roads);

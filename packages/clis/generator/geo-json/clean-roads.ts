@@ -337,6 +337,8 @@ export function cleanRoads(
     connectors: { pts: P[]; sh: P; eh: P }[];
     /** how far its lanes reach from the carriageway centers its connectors use */
     spread: number;
+    /** roads go through it (two nodes or more), not just into it */
+    through: boolean;
   }
   const infos: PrefabInfo[] = [];
   for (const p of prefabs.values()) {
@@ -361,6 +363,7 @@ export function cleanRoads(
       lanes,
       connectors: [],
       spread: 0,
+      through: p.nodeUids.length >= 2,
     };
     infos.push(info);
     if (p.nodeUids.length < 2) continue;
@@ -503,14 +506,19 @@ export function cleanRoads(
     }
   }
 
-  // Junctions that connectors can't draw keep the game's UI paths, whole and
-  // at every zoom, as roads of their own: their AI lanes only show from
-  // zoom 10, and thin, so the junction (and the roads through it) would
-  // vanish when zoomed out.
+  // Junctions, and prefabs roads go through (a motorway through a big
+  // service station), that connectors can't draw keep the game's UI paths,
+  // whole and at every zoom, as roads of their own: their AI lanes only
+  // show from zoom 10, and thin, so the prefab (and the roads through it)
+  // would vanish when zoomed out.
   const pathJunctions = new Set(
     infos
       .filter(
-        i => i.junction && !i.toll && i.lanes.length && !simple.has(i.uid),
+        i =>
+          (i.junction || i.through) &&
+          !i.toll &&
+          i.lanes.length &&
+          !simple.has(i.uid),
       )
       .map(i => i.uid),
   );
@@ -521,7 +529,7 @@ export function cleanRoads(
     families.set(family, (families.get(family) ?? 0) + 1);
   }
   logger.log(
-    `clean roads: ${pathJunctions.size} junctions drawn with the game's paths (${[
+    `clean roads: ${pathJunctions.size} junctions and through prefabs drawn with the game's paths (${[
       ...families,
     ]
       .sort((a, b) => b[1] - a[1])
@@ -601,7 +609,12 @@ export function cleanRoads(
     }
     // a path's id is `<prefab uid>road<n>`
     if (pathJunctions.has(String(f.id).split('road')[0])) {
-      out.push({ ...f, properties: { ...f.properties, prefab: true } });
+      // a service station's paths stay over its yard (see `yard`)
+      const yard = isYardPath(f) ? { yard: true } : {};
+      out.push({
+        ...f,
+        properties: { ...f.properties, prefab: true, ...yard },
+      });
       keptPieces++;
       continue;
     }

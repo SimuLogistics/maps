@@ -613,11 +613,22 @@ export function cleanRoads(
       // that don't go from one of its nodes to another run inside the
       // station: local, whatever road the game typed them as (the motorway
       // through it keeps its type).
+      // the game's path and the road it continues at a prefab node aren't
+      // always on the same line (the road is drawn where its lanes are):
+      // start and end on it.
+      const pts = g((f.geometry as GeoJSON.LineString).coordinates);
+      const atNode = [f.properties?.startNodeUid, f.properties?.endNodeUid];
+      [0, pts.length - 1].forEach((k, end) => {
+        const near =
+          atNode[end] != null ? regIdx.nearest(pts[k], 10) : undefined;
+        if (near) pts[k] = near.q;
+      });
       const inYard = isYardPath(f);
       const through =
         f.properties?.startNodeUid != null && f.properties.endNodeUid != null;
       out.push({
         ...f,
+        geometry: { type: 'LineString', coordinates: w(pts) },
         properties: {
           ...f.properties,
           prefab: true,

@@ -175,6 +175,7 @@ export function handler(args: BuilderArguments<typeof builder>) {
       'roadType',
       'lane',
       'level',
+      'prefab',
       'color',
       'name',
     ];

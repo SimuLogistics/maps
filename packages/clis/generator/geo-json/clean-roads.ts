@@ -10,6 +10,8 @@
 //  - road types are fixed where the game reuses motorway templates on ordinary
 //    roads;
 //  - bridges are drawn above the roads they pass over (see road-levels.ts).
+// Everything drawn for a prefab (connectors, lanes, kept UI paths) has
+// `prefab: true`, so the map style can draw it over the roads, as the game does.
 // Everything is computed in game coordinates (metres) and converted back.
 import type { Position } from '@truckermudgeon/base/geom';
 import { toSplinePoints } from '@truckermudgeon/base/geom';
@@ -576,7 +578,8 @@ export function cleanRoads(
         out.push({
           type: 'Feature',
           id: `${f.id}p${piece++}`,
-          properties: f.properties,
+          // drawn over the roads, like the rest of the prefab
+          properties: { ...f.properties, prefab: true },
           geometry: { type: 'LineString', coordinates: w(simplify(run, 0.3)) },
         });
         keptPieces++;
@@ -608,6 +611,7 @@ export function cleanRoads(
           hidden: false,
           secret: false,
           connector: true,
+          prefab: true,
         },
         geometry: { type: 'LineString', coordinates: w(c.pts) },
       });
@@ -641,6 +645,7 @@ export function cleanRoads(
         type: 'road',
         roadType: l.roadType,
         lane: true,
+        prefab: true,
         hidden: false,
         secret: false,
         dlcGuard: 0,

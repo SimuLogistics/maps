@@ -661,30 +661,7 @@ export function cleanRoads(
       });
   const bridges = liftBridges(out, g, w, data);
   logger.log(`clean roads: ${bridges} crossings drawn as bridges`);
-  drawMajorRoadsLast(out);
   geoJson.features = out as GeoJSON.Feature[];
-}
-
-/**
- * Road lines are drawn in feature order: put motorways after divided roads,
- * and those after local roads, so a ramp or a side road joining a bigger road
- * ends under it instead of on top of it. Other features keep their place.
- */
-function drawMajorRoadsLast(features: Feature[]): void {
-  const slots: number[] = [];
-  features.forEach((f, k) => {
-    if (
-      f.properties?.type === 'road' &&
-      f.geometry.type === 'LineString' &&
-      (f.properties.roadType as string) in RANK
-    )
-      slots.push(k);
-  });
-  const rank = (f: Feature) => RANK[f.properties.roadType as string];
-  const roads = slots.map(k => features[k]);
-  // stable: same-type roads keep their order
-  roads.sort((a, b) => rank(a) - rank(b));
-  slots.forEach((k, i) => (features[k] = roads[i]));
 }
 
 /** Space between two carriageways from which they are drawn apart. */

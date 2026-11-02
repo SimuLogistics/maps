@@ -61,6 +61,8 @@ import { quadtree } from 'd3-quadtree';
 import type { GeoJSON } from 'geojson';
 import { buildDlcGuardSpatialIndex, dlcGuardMapDataKeys } from '../dlc-guards';
 import { logger } from '../logger';
+import type { LookLaneOffsets } from './lane-offsets';
+import { MIN_DIVIDED_MEDIAN, measureLookLaneOffsets } from './lane-offsets';
 import { createNormalizeFeature } from './normalize';
 import { ets2IsoA2, getCitiesByCountryIsoA2 } from './populated-places';
 
@@ -258,6 +260,16 @@ export function convertToMapGeoJson(
     );
   }
 
+  logger.log('measuring road lanes on prefab nav curves...');
+  const laneOffsets = measureLookLaneOffsets(tsMapData);
+  logger.info(
+    laneOffsets.looks.size,
+    'road looks measured,',
+    [...laneOffsets.looks.values()].filter(l => l.median >= MIN_DIVIDED_MEDIAN)
+      .length,
+    'with two carriageways',
+  );
+
   logger.log('creating roads and quadtree of prefab-adjacent roads...');
   const roadFeatures: RoadFeature[] = [];
   for (const r of roads.values()) {
@@ -271,6 +283,8 @@ export function convertToMapGeoJson(
       assertExists(roadLooks.get(r.roadLookToken)),
       nodes,
       dividerFeatures,
+      laneOffsets.looks.get(r.roadLookToken),
+      laneOffsets.leftHandRoads.has(r.uid),
     );
     for (const f of fs) {
       roadFeatures.push(f);
@@ -1497,6 +1511,8 @@ function roadToFeature(
   roadLook: RoadLook,
   nodes: ReadonlyMap<bigint, Node>,
   _dividerFeatures: GeoJSON.Feature<GeoJSON.LineString>[],
+  measured: LookLaneOffsets | undefined,
+  leftHand: boolean,
 ): RoadFeature[] {
   const startNode = Preconditions.checkExists(nodes.get(road.startNodeUid));
   const endNode = Preconditions.checkExists(nodes.get(road.endNodeUid));
@@ -1548,6 +1564,11 @@ function roadToFeature(
   //  }
   //}
 
+  // lane variants change the lanes, so the look's measurement doesn't hold.
+  if (measured && !road.leftLanesVariant && !road.rightLanesVariant) {
+    return measuredRoadToFeatures(road, points, properties, measured, leftHand);
+  }
+
   const offset =
     road.maybeDivided && roadLook.laneOffset
       ? roadLook.laneOffset
@@ -1597,6 +1618,48 @@ function roadToFeature(
       id: road.uid.toString(16),
     },
   ];
+}
+
+/**
+ * Draws a road where its lanes are, as measured on prefab nav curves: two
+ * carriageways when they're at least `MIN_DIVIDED_MEDIAN` apart, each in the
+ * middle of its lanes; otherwise one line in the middle of all lanes.
+ */
+function measuredRoadToFeatures(
+  road: Road,
+  points: Position[],
+  properties: RoadFeature['properties'],
+  measured: LookLaneOffsets,
+  leftHand: boolean,
+): RoadFeature[] {
+  const side = leftHand ? -1 : 1;
+  const forward = side * measured.forward;
+  const backward = side * measured.backward;
+  const id = road.uid.toString(16);
+  const shifted = (offset: number) =>
+    Math.abs(offset) < 0.25
+      ? points
+      : lineOffset(turf.lineString(points), offset, { units: 'degrees' })
+          .geometry.coordinates;
+
+  if (measured.median >= MIN_DIVIDED_MEDIAN) {
+    return [
+      {
+        ...lineString(shifted(forward), { ...properties, leftLanes: 0 }),
+        id,
+      },
+      {
+        ...lineString(shifted(backward), { ...properties, rightLanes: 0 }),
+        id,
+      },
+    ];
+  }
+  const { leftLanes, rightLanes } = properties;
+  const center =
+    leftLanes + rightLanes > 0
+      ? (forward * rightLanes + backward * leftLanes) / (leftLanes + rightLanes)
+      : (forward + backward) / 2;
+  return [{ ...lineString(shifted(center), properties), id }];
 }
 
 function roadLookToProperties(

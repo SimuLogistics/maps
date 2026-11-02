@@ -410,6 +410,7 @@ export function cleanRoads(
   const regular: { pts: P[]; props: Record<string, unknown> }[] = [];
   const pathEnds: P[] = [];
   const pathEndProps: Record<string, unknown>[] = [];
+  const pathEndIds: Feature['id'][] = [];
   for (const f of features) {
     if (!isRoad(f)) continue;
     const pts = g((f.geometry as GeoJSON.LineString).coordinates);
@@ -417,6 +418,7 @@ export function cleanRoads(
     for (const e of [pts[0], pts[pts.length - 1]]) {
       pathEnds.push(e);
       pathEndProps.push(f.properties);
+      pathEndIds.push(f.id);
     }
   }
   const regIdx = new LineIndex(regular.map(r => r.pts));
@@ -621,13 +623,23 @@ export function cleanRoads(
       const pts = g((f.geometry as GeoJSON.LineString).coordinates);
       const atNode = [f.properties?.startNodeUid, f.properties?.endNodeUid];
       [0, pts.length - 1].forEach((k, end) => {
-        if (atNode[end] == null || pts.length < 2) return;
-        const from = pts[end ? k - 1 : k + 1];
+        if (pts.length < 2) return;
+        // well back along the path: its last points can already be on the
+        // road's middle line, merging
+        const from = pointBack(pts, end === 1, 60);
         let best: { q: P; d: number } | undefined;
-        for (const line of regIdx.within(pts[k], 12)) {
-          const q = nearestOnLine(regular[line].pts, pts[k]);
+        const take = (q: P) => {
           const d = dist(q, from);
           if (!best || d < best.d) best = { q, d };
+        };
+        if (atNode[end] != null) {
+          for (const line of regIdx.within(pts[k], 12))
+            take(nearestOnLine(regular[line].pts, pts[k]));
+        } else {
+          // a ramp merging into a divided road can end off the node, between
+          // the carriageways: join the end of the carriageway on its side.
+          for (const i of endIdx.within(pts[k], 30))
+            if (!isPath({ id: pathEndIds[i] } as Feature)) take(pathEnds[i]);
         }
         if (best) pts[k] = best.q;
       });
@@ -774,6 +786,24 @@ export function cleanRoads(
   const bridges = liftBridges(out, g, w, data);
   logger.log(`clean roads: ${bridges} crossings drawn as bridges`);
   geoJson.features = out as GeoJSON.Feature[];
+}
+
+/** The point `back` metres along a polyline from its start or (`fromEnd`) end. */
+function pointBack(l: P[], fromEnd: boolean, back: number): P {
+  const pts = fromEnd ? [...l].reverse() : l;
+  let left = back;
+  for (let i = 1; i < pts.length; i++) {
+    const d = dist(pts[i - 1], pts[i]);
+    if (d >= left) {
+      const t = left / d;
+      return [
+        pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t,
+        pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t,
+      ];
+    }
+    left -= d;
+  }
+  return pts[pts.length - 1];
 }
 
 /** The point of a polyline closest to `p`. */

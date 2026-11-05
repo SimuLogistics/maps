@@ -8,7 +8,13 @@
 //  - toll plazas are drawn as one filled surface;
 //  - holes left between road ends are closed;
 //  - road types are fixed where the game reuses motorway templates on ordinary
-//    roads.
+//    roads;
+//  - bridges are drawn above the roads they pass over (see road-levels.ts).
+// Everything drawn for a prefab (connectors, lanes, kept UI paths) has
+// `prefab: true`, so the map style can draw it over the roads, as the game does,
+// and `yard: true` for the prefabs that aren't junctions (companies, service
+// areas, parkings): the style draws their yards and inner roads over the
+// roads that lead into them.
 // Everything is computed in game coordinates (metres) and converted back.
 import type { Position } from '@truckermudgeon/base/geom';
 import { toSplinePoints } from '@truckermudgeon/base/geom';
@@ -20,10 +26,12 @@ import {
   fromWgs84ToAtsCoords,
   fromWgs84ToEts2Coords,
 } from '@truckermudgeon/map/projections';
+import type { PrefabDescription } from '@truckermudgeon/map/types';
 import type { GeoJSON } from 'geojson';
 import polygonClipping from 'polygon-clipping';
 import RBush from 'rbush';
 import { logger } from '../logger';
+import { liftBridges } from './road-levels';
 
 type P = [number, number];
 type RoadType = 'freeway' | 'divided' | 'local';
@@ -31,17 +39,19 @@ const RANK: Record<string, number> = { local: 0, divided: 1, freeway: 2 };
 
 export const cleanRoadsMapDataKeys = [
   'nodes',
+  'roads',
+  'roadLooks',
   'prefabs',
   'prefabDescriptions',
 ] as const;
 type CleanRoadsData = MappedDataForKeys<
-  ['nodes', 'prefabs', 'prefabDescriptions']
+  ['nodes', 'roads', 'roadLooks', 'prefabs', 'prefabDescriptions']
 > & { map: 'usa' | 'europe' };
 
 type Feature = GeoJSON.Feature<GeoJSON.Geometry, Record<string, unknown>>;
 
 // prefab categories (second path element) that only hold node-to-node lanes
-const JUNCTION_DIRS = [
+export const JUNCTION_DIRS = [
   'fork_temp',
   'cross_temp',
   'round_temp',
@@ -303,7 +313,7 @@ export function cleanRoads(
   geoJson: GeoJSON.FeatureCollection,
   data: CleanRoadsData,
 ): void {
-  const { nodes, prefabs, prefabDescriptions, map } = data;
+  const { nodes, roadLooks, prefabs, prefabDescriptions, map } = data;
   const toGame = map === 'usa' ? fromWgs84ToAtsCoords : fromWgs84ToEts2Coords;
   const toWgs = map === 'usa' ? fromAtsCoordsToWgs84 : fromEts2CoordsToWgs84;
   const g = (c: GeoJSON.Position[]) => c.map(p => toGame(p as P) as P);
@@ -325,8 +335,45 @@ export function cleanRoads(
     toll: boolean;
     junction: boolean;
     lanes: P[][];
-    connectors: { pts: P[]; sh: P; eh: P }[];
+    connectors: {
+      pts: P[];
+      sh: P;
+      eh: P;
+      sm: P;
+      em: P;
+      nodes: [number, number];
+    }[];
+    /** how far its lanes reach from the carriageway centers its connectors use */
+    spread: number;
+    /** roads go through it (two nodes or more), not just into it */
+    through: boolean;
+    /** its lanes go round in a loop (a roundabout) */
+    ring: boolean;
   }
+  // Nodes where rails (a tram line) leave a prefab, and where roads do.
+  const railNodes = new Set<bigint>(),
+    roadNodes = new Set<bigint>();
+  // (tram lines are often hidden roads: they still lead the lanes there)
+  for (const r of data.roads.values()) {
+    const look = roadLooks.get(r.roadLookToken);
+    const rail =
+      !!look &&
+      [...look.lanesLeft, ...look.lanesRight].every(l =>
+        l.startsWith('traffic_lane.rail.'),
+      );
+    if (!rail && r.hidden) continue;
+    for (const n of [r.startNodeUid, r.endNodeUid])
+      (rail ? railNodes : roadNodes).add(n);
+  }
+  // and hidden tram prefabs (a fork of the rails)
+  for (const p of prefabs.values()) {
+    if (!p.hidden) continue;
+    const path =
+      (prefabDescriptions.get(p.token) as { path?: string } | undefined)
+        ?.path ?? '';
+    if (/tram|rail/.test(path)) for (const n of p.nodeUids) railNodes.add(n);
+  }
+  let railConnectors = 0;
   const infos: PrefabInfo[] = [];
   for (const p of prefabs.values()) {
     const desc = prefabDescriptions.get(p.token);
@@ -336,11 +383,29 @@ export function cleanRoads(
     if (p.hidden) continue;
     const path = (desc as { path?: string }).path ?? '';
     const tx = (pos: Position) => toMapPosition(pos, p, desc, nodes) as P;
-    const lanes: P[][] = desc.navCurves.map(c =>
-      toSplinePoints(
-        { position: [c.start.x, c.start.y], rotation: c.start.rotation },
-        { position: [c.end.x, c.end.y], rotation: c.end.rotation },
-      ).map(tx),
+    const n = p.nodeUids.length;
+    // the world node of each of the description's nodes
+    const worldUids = desc.nodes.map(
+      (_, k) => p.nodeUids[(k - p.originNodeIndex + n) % n],
+    );
+    // A tram line through a prefab (into the middle of a roundabout) isn't a
+    // road: no connector leads to a node only rails leave from, and its
+    // lanes aren't drawn. A road leaving there too keeps its connectors.
+    const railIdx = new Set(
+      worldUids.flatMap((u, k) =>
+        railNodes.has(u) && !roadNodes.has(u) ? [k] : [],
+      ),
+    );
+    const rails = railCurves(desc, railIdx);
+    const lanes: P[][] = desc.navCurves.flatMap((c, k) =>
+      rails.has(k)
+        ? []
+        : [
+            toSplinePoints(
+              { position: [c.start.x, c.start.y], rotation: c.start.rotation },
+              { position: [c.end.x, c.end.y], rotation: c.end.rotation },
+            ).map(tx),
+          ],
     );
     const info: PrefabInfo = {
       uid: p.uid.toString(16),
@@ -349,6 +414,9 @@ export function cleanRoads(
       junction: JUNCTION_DIRS.includes(path.split('/')[1] ?? ''),
       lanes,
       connectors: [],
+      spread: 0,
+      through: p.nodeUids.length >= 2,
+      ring: hasLoop(desc.navCurves),
     };
     infos.push(info);
     if (p.nodeUids.length < 2) continue;
@@ -358,30 +426,28 @@ export function cleanRoads(
     } catch {
       continue;
     }
-    const n = p.nodeUids.length;
     const world = p.nodeUids.map((_, k) =>
       nodes.get(p.nodeUids[(k - p.originNodeIndex + n) % n]),
     );
-    const pairs = new Map<string, { i: number; j: number; s: P[]; e: P[] }>();
+    const pairs = new Set<string>(),
+      railPairs = new Set<string>();
     for (const [i, ls] of laneInfo) {
       for (const lane of ls) {
         for (const br of lane.branches) {
           const j = br.targetNodeIndex;
           if (!world[i] || !world[j] || i === j || br.curvePoints.length < 2)
             continue;
-          const key = `${i}-${j}`;
-          let e = pairs.get(key);
-          if (!e) pairs.set(key, (e = { i, j, s: [], e: [] }));
-          e.s.push(tx(br.curvePoints[0]));
-          e.e.push(tx(br.curvePoints[br.curvePoints.length - 1]));
+          (railIdx.has(i) || railIdx.has(j) ? railPairs : pairs).add(
+            `${i}-${j}`,
+          );
         }
       }
     }
-    const mean = (ps: P[]): P => [
-      ps.reduce((s, q) => s + q[0], 0) / ps.length,
-      ps.reduce((s, q) => s + q[1], 0) / ps.length,
-    ];
-    for (const { i, j, s, e } of pairs.values()) {
+    railConnectors += railPairs.size;
+    const ends = desc.nodes.map(nd => carriagewayEnds(desc, nd, tx));
+    info.spread = Math.max(0, ...ends.map(e => e.spread));
+    for (const key of pairs) {
+      const [i, j] = key.split('-').map(Number);
       const a = world[i]!,
         b = world[j]!;
       const dx = b.x - a.x,
@@ -390,8 +456,11 @@ export function cleanRoads(
         Math.cos(r) * dx + Math.sin(r) * dy >= 0 ? r : r + Math.PI;
       info.connectors.push({
         pts: hermite([a.x, a.y], fix(a.rotation), [b.x, b.y], fix(b.rotation)),
-        sh: mean(s),
-        eh: mean(e),
+        sh: ends[i].into,
+        eh: ends[j].outOf,
+        sm: ends[i].alone.into,
+        em: ends[j].alone.outOf,
+        nodes: [i, j],
       });
     }
   }
@@ -400,6 +469,7 @@ export function cleanRoads(
   const regular: { pts: P[]; props: Record<string, unknown> }[] = [];
   const pathEnds: P[] = [];
   const pathEndProps: Record<string, unknown>[] = [];
+  const pathEndIds: Feature['id'][] = [];
   for (const f of features) {
     if (!isRoad(f)) continue;
     const pts = g((f.geometry as GeoJSON.LineString).coordinates);
@@ -407,15 +477,22 @@ export function cleanRoads(
     for (const e of [pts[0], pts[pts.length - 1]]) {
       pathEnds.push(e);
       pathEndProps.push(f.properties);
+      pathEndIds.push(f.id);
     }
   }
   const regIdx = new LineIndex(regular.map(r => r.pts));
   const endIdx = new PointIndex(pathEnds);
-  const snap = (node: P, hint: P) => {
+  // `other`: the connector's other node. In a short prefab, the road at the
+  // other node can be the nearest one: never snap closer to it than to `node`.
+  // `alone`: where to end without a road there (see `carriagewayEnds`).
+  const snap = (node: P, hint: P, other: P, alone: P) => {
     if (dist(node, hint) < 30) {
       const k = regIdx.nearest(hint, 6);
-      if (k && dist(k.q, node) < 25)
+      if (k && dist(k.q, node) < 25 && dist(k.q, node) < dist(k.q, other))
         return { p: k.q, props: regular[k.line].props };
+      // no road here (two prefabs meet): end where the carriageway is, so
+      // both prefabs' connectors meet there instead of pinching on the node.
+      return { p: alone, props: undefined };
     }
     return { p: node, props: undefined };
   };
@@ -424,6 +501,9 @@ export function cleanRoads(
     uid: string;
     pts: P[];
     props: Record<string, unknown>;
+    nodes: [number, number];
+    /** goes on from one node to the other, rather than turning */
+    straight: boolean;
   }
   const conns = new Map<string, Conn[]>();
   for (const info of infos) {
@@ -432,8 +512,8 @@ export function cleanRoads(
       const m = c.pts;
       const r0 = angle(m[0], m[1]),
         r1 = angle(m[m.length - 2], m[m.length - 1]);
-      const a = snap(m[0], c.sh),
-        b = snap(m[m.length - 1], c.eh);
+      const a = snap(m[0], c.sh, m[m.length - 1], c.sm),
+        b = snap(m[m.length - 1], c.eh, m[0], c.em);
       if (dist(a.p, b.p) < 1) continue;
       const key = [a.p, b.p]
         .map(q => `${q[0].toFixed(1)},${q[1].toFixed(1)}`)
@@ -450,7 +530,14 @@ export function cleanRoads(
             : { roadType: 'local', leftLanes: 1, rightLanes: 1 };
       }
       const list = conns.get(info.uid) ?? [];
-      list.push({ uid: info.uid, pts: hermite(a.p, r0, b.p, r1), props: src });
+      const turn = Math.abs(Math.atan2(Math.sin(r1 - r0), Math.cos(r1 - r0)));
+      list.push({
+        uid: info.uid,
+        pts: hermite(a.p, r0, b.p, r1),
+        props: src,
+        nodes: c.nodes,
+        straight: turn < STRAIGHT_TURN,
+      });
       conns.set(info.uid, list);
     }
   }
@@ -458,16 +545,22 @@ export function cleanRoads(
   // --- prefabs drawn by connectors: every lane close to one of its connectors ---
   const simple = new Set<string>();
   for (const info of infos) {
-    if (info.toll || !info.lanes.length) continue;
+    // connectors link nodes two by two: a roundabout's ring would be lost
+    if (info.toll || info.ring || !info.lanes.length) continue;
     const cs = conns.get(info.uid);
     if (!cs) continue;
     // a few connectors per prefab: test them directly rather than build a tree
-    const tol = info.junction ? 25 : 9;
+    // connectors follow the middle of each carriageway: its outer lanes are
+    // that much further from them.
+    const tol = (info.junction ? 25 : 9) + info.spread;
     if (
       info.lanes.every(l => l.every(p => cs.some(c => nearLine(c.pts, p, tol))))
     )
       simple.add(info.uid);
   }
+  logger.log(
+    `clean roads: ${railConnectors} connectors to tram lines left out`,
+  );
   logger.log(
     `clean roads: ${simple.size} of ${infos.filter(i => i.lanes.length && !i.toll).length} prefabs drawn by connectors`,
   );
@@ -489,11 +582,44 @@ export function cleanRoads(
     }
   }
 
+  // Junctions, and prefabs roads go through (a motorway through a big
+  // service station), that connectors can't draw keep the game's UI paths,
+  // whole and at every zoom, as roads of their own: their AI lanes only
+  // show from zoom 10, and thin, so the prefab (and the roads through it)
+  // would vanish when zoomed out.
+  const pathJunctions = new Set(
+    infos
+      .filter(
+        i =>
+          (i.junction || i.through) &&
+          !i.toll &&
+          i.lanes.length &&
+          !simple.has(i.uid),
+      )
+      .map(i => i.uid),
+  );
+  const families = new Map<string, number>();
+  for (const i of infos) {
+    if (!pathJunctions.has(i.uid)) continue;
+    const family = i.path.split('/').slice(1, 3).join('/');
+    families.set(family, (families.get(family) ?? 0) + 1);
+  }
+  logger.log(
+    `clean roads: ${pathJunctions.size} junctions and through prefabs drawn with the game's paths (${[
+      ...families,
+    ]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([f, n]) => `${f} ${n}`)
+      .join(', ')})`,
+  );
+
   // --- drop the game's UI paths where lanes, connectors or plazas cover them ---
   const kept: P[][] = [],
     simpleConns: P[][] = [],
     simpleLanes: P[][] = [];
   for (const info of infos) {
+    if (pathJunctions.has(info.uid)) continue;
     if (simple.has(info.uid)) {
       simpleLanes.push(...info.lanes);
       simpleConns.push(...(conns.get(info.uid) ?? []).map(c => c.pts));
@@ -545,6 +671,10 @@ export function cleanRoads(
       );
   const joinToConnector = (p: P): P => connIdx.nearest(p, 10)?.q ?? p;
 
+  const infoByUid = new Map(infos.map(i => [i.uid, i]));
+  // the prefab a UI path belongs to: its id is `<prefab uid>road<n>`
+  const isYardPath = (f: Feature) =>
+    infoByUid.get(String(f.id).split('road')[0])?.junction === false;
   const out: Feature[] = [];
   let keptPieces = 0;
   for (const f of features) {
@@ -553,20 +683,76 @@ export function cleanRoads(
       out.push(f);
       continue;
     }
+    // a path's id is `<prefab uid>road<n>`
+    if (pathJunctions.has(String(f.id).split('road')[0])) {
+      // a service station's paths stay over its yard (see `yard`); the ones
+      // that don't go from one of its nodes to another run inside the
+      // station: local, whatever road the game typed them as (the motorway
+      // through it keeps its type).
+      // the game's path and the road it continues at a prefab node aren't
+      // always on the same line (the road is drawn where its lanes are):
+      // start and end on it.
+      // At a divided road, the path ends on the node, between the two
+      // carriageways: take the one on the side the path comes from.
+      const pts = g((f.geometry as GeoJSON.LineString).coordinates);
+      const atNode = [f.properties?.startNodeUid, f.properties?.endNodeUid];
+      [0, pts.length - 1].forEach((k, end) => {
+        if (pts.length < 2) return;
+        // well back along the path: its last points can already be on the
+        // road's middle line, merging
+        const from = pointBack(pts, end === 1, 60);
+        let best: { q: P; d: number } | undefined;
+        const take = (q: P) => {
+          const d = dist(q, from);
+          if (!best || d < best.d) best = { q, d };
+        };
+        if (atNode[end] != null) {
+          for (const line of regIdx.within(pts[k], 12))
+            take(nearestOnLine(regular[line].pts, pts[k]));
+        } else {
+          // a ramp merging into a divided road can end off the node, between
+          // the carriageways: join the end of the carriageway on its side.
+          for (const i of endIdx.within(pts[k], 30))
+            if (!isPath({ id: pathEndIds[i] } as Feature)) take(pathEnds[i]);
+        }
+        if (best) pts[k] = best.q;
+      });
+      const inYard = isYardPath(f);
+      const through =
+        f.properties?.startNodeUid != null && f.properties.endNodeUid != null;
+      out.push({
+        ...f,
+        geometry: { type: 'LineString', coordinates: w(pts) },
+        properties: {
+          ...f.properties,
+          prefab: true,
+          ...(inYard ? { yard: true } : {}),
+          ...(inYard && !through ? { roadType: 'local' } : {}),
+        },
+      });
+      keptPieces++;
+      continue;
+    }
     const m = segmentize(g((f.geometry as GeoJSON.LineString).coordinates), 4);
-    const red: boolean[] = [];
+    // per segment: drawn by connectors, plazas or simple lanes (dropped),
+    // covered by the AI lanes of another prefab, or kept
+    const state: ('drop' | 'lanes' | 'keep')[] = [];
     for (let i = 0; i + 1 < m.length; i++) {
       const mid: P = [(m[i][0] + m[i + 1][0]) / 2, (m[i][1] + m[i + 1][1]) / 2];
       const pts = [mid, m[i], m[i + 1]];
-      red.push(
-        pts.every(p => keptIdx.any(p, 4)) ||
-          pts.every(p => connIdx.any(p, 7)) ||
+      state.push(
+        pts.every(p => connIdx.any(p, 7)) ||
           inPlaza(mid) ||
           connIdx.any(mid, 6) ||
-          simpleLaneIdx.any(mid, 5),
+          simpleLaneIdx.any(mid, 5)
+          ? 'drop'
+          : pts.every(p => keptIdx.any(p, 4))
+            ? 'lanes'
+            : 'keep',
       );
     }
     let run: P[] = [];
+    let runState: (typeof state)[number] = 'drop';
     let piece = 0;
     const flush = () => {
       if (run.length >= 2 && lineLength(run) >= 15) {
@@ -575,26 +761,44 @@ export function cleanRoads(
         out.push({
           type: 'Feature',
           id: `${f.id}p${piece++}`,
-          properties: f.properties,
+          // drawn over the roads, like the rest of the prefab
+          properties: {
+            ...f.properties,
+            prefab: true,
+            ...(isYardPath(f) ? { yard: true } : {}),
+          },
           geometry: { type: 'LineString', coordinates: w(simplify(run, 0.3)) },
-        });
-        keptPieces++;
+          // AI lanes only show from zoom 10 (see below): until then, the
+          // game's path keeps the junction drawn.
+          ...(runState === 'lanes' ? { tippecanoe: { maxzoom: 9 } } : {}),
+        } as Feature);
+        if (runState === 'keep') keptPieces++;
       }
       run = [];
     };
-    red.forEach((r, i) => {
-      if (r) flush();
-      else {
-        if (!run.length) run = [m[i]];
-        run.push(m[i + 1]);
-      }
+    state.forEach((st, i) => {
+      if (st !== runState) flush();
+      runState = st;
+      if (st === 'drop') return;
+      if (!run.length) run = [m[i]];
+      run.push(m[i + 1]);
     });
     flush();
   }
 
+  // At a crossing, the roads going straight through draw it: the turns
+  // between two of them would only fill its corners (the game's own map
+  // shows a plain cross). A turn into a road that stops there (a T's stem)
+  // is how that road joins: kept.
+  const turnsKept = (uid: string) => {
+    const cs = conns.get(uid) ?? [];
+    if (!infoByUid.get(uid)?.junction) return cs;
+    const through = new Set(cs.filter(c => c.straight).flatMap(c => c.nodes));
+    return cs.filter(c => c.straight || !c.nodes.every(n => through.has(n)));
+  };
   const connFeatures: Feature[] = [];
   for (const uid of simple)
-    for (const c of conns.get(uid) ?? []) {
+    for (const c of turnsKept(uid)) {
       const s = c.props;
       connFeatures.push({
         type: 'Feature',
@@ -607,6 +811,8 @@ export function cleanRoads(
           hidden: false,
           secret: false,
           connector: true,
+          prefab: true,
+          ...(infoByUid.get(uid)?.junction === false ? { yard: true } : {}),
         },
         geometry: { type: 'LineString', coordinates: w(c.pts) },
       });
@@ -625,7 +831,8 @@ export function cleanRoads(
   logger.log(
     `clean roads: ${lowered} connectors lowered to the type of the road they join`,
   );
-  const laneOf = (info: PrefabInfo) => !info.toll && !simple.has(info.uid);
+  const laneOf = (info: PrefabInfo) =>
+    !info.toll && !simple.has(info.uid) && !pathJunctions.has(info.uid);
   // demoteIsolatedMotorways only retypes roads: the index serves both passes
   const roads = roadLineIndex(out, g);
   let lanes = typeLanes(infos.filter(laneOf), out, roads);
@@ -640,6 +847,8 @@ export function cleanRoads(
         type: 'road',
         roadType: l.roadType,
         lane: true,
+        prefab: true,
+        ...(l.yard ? { yard: true } : {}),
         hidden: false,
         secret: false,
         dlcGuard: 0,
@@ -658,7 +867,149 @@ export function cleanRoads(
           coordinates: poly.map(r => w(simplify(r as P[], 0.3))),
         },
       });
+  const bridges = liftBridges(out, g, w, data);
+  logger.log(`clean roads: ${bridges} crossings drawn as bridges`);
   geoJson.features = out as GeoJSON.Feature[];
+}
+
+/** The point `back` metres along a polyline from its start or (`fromEnd`) end. */
+function pointBack(l: P[], fromEnd: boolean, back: number): P {
+  const pts = fromEnd ? [...l].reverse() : l;
+  let left = back;
+  for (let i = 1; i < pts.length; i++) {
+    const d = dist(pts[i - 1], pts[i]);
+    if (d >= left) {
+      const t = left / d;
+      return [
+        pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t,
+        pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t,
+      ];
+    }
+    left -= d;
+  }
+  return pts[pts.length - 1];
+}
+
+/** The point of a polyline closest to `p`. */
+function nearestOnLine(l: P[], p: P): P {
+  let best = l[0];
+  let bd = Infinity;
+  for (let i = 1; i < l.length; i++) {
+    const { q, d } = projectOnSegment(p, l[i - 1], l[i]);
+    if (d < bd) {
+      bd = d;
+      best = q;
+    }
+  }
+  return best;
+}
+
+/** Largest change of heading, in radians, of a connector going straight on. */
+const STRAIGHT_TURN = Math.PI / 6;
+
+/** Space between two carriageways from which they are drawn apart. */
+const MIN_MEDIAN = 3;
+
+/**
+ * Where a prefab node's carriageways are, from its lanes' ends: `into` for the
+ * center of the lanes entering the prefab, `outOf` for the ones leaving it
+ * (with lanes one way only, both are their middle). Without a median the
+ * road at the node is one line where no road is drawn (two prefabs meet):
+ * `alone` is then the middle of all lanes, else `into` (connectors entering
+ * and leaving use their own). `spread` is how far the lanes reach from the
+ * line the connectors follow: those centers with a median, the middle of all
+ * lanes without one.
+ */
+function carriagewayEnds(
+  desc: PrefabDescription,
+  node: PrefabDescription['nodes'][number],
+  tx: (pos: Position) => P,
+): { into: P; outOf: P; alone: { into: P; outOf: P }; spread: number } {
+  const pos = (c: { x: number; y: number }) => tx([c.x, c.y]);
+  const into = node.inputLanes.flatMap(ci => {
+    const c = desc.navCurves[ci];
+    return c ? [pos(c.start)] : [];
+  });
+  const outOf = node.outputLanes.flatMap(ci => {
+    const c = desc.navCurves[ci];
+    return c ? [pos(c.end)] : [];
+  });
+  const all = [...into, ...outOf];
+  if (!all.length) {
+    const at = tx([node.x, node.y]);
+    return { into: at, outOf: at, alone: { into: at, outOf: at }, spread: 0 };
+  }
+  const reach = (ps: P[], c: P) => Math.max(0, ...ps.map(q => dist(q, c)));
+  const middle = mean(all);
+  const one = { into: middle, outOf: middle };
+  if (!into.length || !outOf.length)
+    return { ...one, alone: one, spread: reach(all, middle) };
+  const [ci, co] = [mean(into), mean(outOf)];
+  // lanes a lane width apart are neighbors; a gap of a lane width plus the
+  // median between the closest lanes of each side makes two carriageways.
+  let gap = Infinity;
+  for (const a of into) for (const b of outOf) gap = Math.min(gap, dist(a, b));
+  // Without a median the road at the node can still be drawn as two
+  // carriageways (its look has one elsewhere, a tram in the middle…): the
+  // centers of each side's lanes still lead to the right one, or onto the
+  // road's middle line when it is drawn as one.
+  const apart = gap >= LANE_WIDTH + MIN_MEDIAN;
+  return {
+    into: ci,
+    outOf: co,
+    alone: apart ? { into: ci, outOf: co } : one,
+    spread: apart
+      ? Math.max(reach(into, ci), reach(outOf, co))
+      : reach(all, middle),
+  };
+}
+
+const LANE_WIDTH = 4.5;
+
+/**
+ * The nav curves of the rails leaving a prefab at the nodes `railIdx`
+ * (description node indices): those nodes' lanes and every curve chained to
+ * them.
+ */
+function railCurves(
+  desc: PrefabDescription,
+  railIdx: Set<number>,
+): Set<number> {
+  const out = new Set<number>();
+  const todo = [...railIdx].flatMap(k => [
+    ...desc.nodes[k].inputLanes,
+    ...desc.nodes[k].outputLanes,
+  ]);
+  while (todo.length) {
+    const c = todo.pop()!;
+    if (out.has(c) || !desc.navCurves[c]) continue;
+    out.add(c);
+    todo.push(...desc.navCurves[c].nextLines, ...desc.navCurves[c].prevLines);
+  }
+  return out;
+}
+
+/** Whether nav curves, following each one's next curves, come back round. */
+export function hasLoop(curves: readonly { nextLines: number[] }[]): boolean {
+  // 0: not seen, 1: on the current path, 2: done
+  const state = new Uint8Array(curves.length);
+  const visit = (i: number): boolean => {
+    state[i] = 1;
+    for (const j of curves[i].nextLines) {
+      if (j < 0 || j >= curves.length || j === i) continue;
+      if (state[j] === 1 || (state[j] === 0 && visit(j))) return true;
+    }
+    state[i] = 2;
+    return false;
+  };
+  return curves.some((_, i) => state[i] === 0 && visit(i));
+}
+
+function mean(ps: P[]): P {
+  return [
+    ps.reduce((s, q) => s + q[0], 0) / ps.length,
+    ps.reduce((s, q) => s + q[1], 0) / ps.length,
+  ];
 }
 
 type ToGame = (c: GeoJSON.Position[]) => P[];
@@ -803,6 +1154,8 @@ function lowerConnectorTypes(features: Feature[], g: ToGame): number {
 interface TypedLane {
   pts: P[];
   roadType: RoadType;
+  /** a lane of a prefab that isn't a junction (company, service area...) */
+  yard?: boolean;
 }
 
 /** Index of the road features `typeLanes` looks at, with their feature index. */
@@ -866,7 +1219,7 @@ function typeLanes(
             break;
           }
       }
-      out.push({ pts, roadType: rt });
+      out.push({ pts, roadType: rt, yard: !info.junction });
     });
   }
   return out;

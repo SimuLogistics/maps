@@ -61,8 +61,12 @@ import { quadtree } from 'd3-quadtree';
 import type { GeoJSON } from 'geojson';
 import { buildDlcGuardSpatialIndex, dlcGuardMapDataKeys } from '../dlc-guards';
 import { logger } from '../logger';
+import { JUNCTION_DIRS } from './clean-roads';
+import type { LookLaneOffsets } from './lane-offsets';
+import { MIN_DIVIDED_MEDIAN, measureLookLaneOffsets } from './lane-offsets';
 import { createNormalizeFeature } from './normalize';
 import { ets2IsoA2, getCitiesByCountryIsoA2 } from './populated-places';
+import { motorwayRamps } from './ramp-types';
 
 type AtsGeoJson = GeoJSON.FeatureCollection<
   AtsMapGeoJsonFeature['geometry'],
@@ -105,6 +109,12 @@ export function convertToMapGeoJson(
   options: {
     includeDebug: boolean;
     skipCoalescing: boolean;
+    /**
+     * Don't join roads with the game's in-prefab UI paths: clean roads redraws
+     * prefabs, and can only replace those paths while they're features of
+     * their own.
+     */
+    keepPrefabPathsApart?: boolean;
   },
 ): AtsGeoJson {
   logger.log('normalizing dlcGuard values...');
@@ -258,8 +268,23 @@ export function convertToMapGeoJson(
     );
   }
 
+  logger.log('measuring road lanes on prefab nav curves...');
+  const laneOffsets = measureLookLaneOffsets(tsMapData);
+  logger.info(
+    laneOffsets.looks.size,
+    'road looks measured,',
+    [...laneOffsets.looks.values()].filter(l => l.median >= MIN_DIVIDED_MEDIAN)
+      .length,
+    'with two carriageways',
+  );
+
+  const ramps = motorwayRamps(tsMapData);
+  logger.info(ramps.size, 'motorway ramps with another road look');
+
   logger.log('creating roads and quadtree of prefab-adjacent roads...');
   const roadFeatures: RoadFeature[] = [];
+  // roads drawn where their lanes are: v-junctions must not move their ends.
+  const measuredRoadFeatures = new Set<RoadFeature>();
   for (const r of roads.values()) {
     // Hidden roads/prefabs are left out of the game's own UI map (unreleased
     // states, off-map stubs, decor): leave them out of the generated map too.
@@ -271,9 +296,17 @@ export function convertToMapGeoJson(
       assertExists(roadLooks.get(r.roadLookToken)),
       nodes,
       dividerFeatures,
+      laneOffsets.looks.get(r.roadLookToken),
+      laneOffsets.leftHandRoads.has(r.uid),
     );
+    if (ramps.has(r.uid)) for (const f of fs) f.properties.roadType = 'freeway';
+    const measured =
+      laneOffsets.looks.has(r.roadLookToken) &&
+      !r.leftLanesVariant &&
+      !r.rightLanesVariant;
     for (const f of fs) {
       roadFeatures.push(f);
+      if (measured) measuredRoadFeatures.add(f);
       if (prefabNodeUids.has(r.startNodeUid)) {
         const node = assertExists(nodes.get(r.startNodeUid));
         contextTree.add({
@@ -498,18 +531,16 @@ export function convertToMapGeoJson(
           //logger.warn('v-joint fallback search at', `${coords[1]}/${coords[0]}`);
         }
 
-        const canMove = ({
-          roadFeature: {
-            id,
-            properties: { leftLanes, rightLanes },
-          },
-        }: QtRoadEntry) =>
+        const canMove = ({ roadFeature }: QtRoadEntry) =>
           // can't move prefab roads, because i don't want to deal with having to
           // move multiple-prefabs that terminate at a single point, e.g.
           // /38.54968/-122.09539
-          !id.includes('road') &&
+          !roadFeature.id.includes('road') &&
           // one-way road
-          (leftLanes === 0 || rightLanes === 0);
+          (roadFeature.properties.leftLanes === 0 ||
+            roadFeature.properties.rightLanes === 0) &&
+          // already ends where its lanes do: moving it would bend its end
+          !measuredRoadFeatures.has(roadFeature);
 
         if (roadAData.roadFeature === roadBData.roadFeature) {
           //const coords = normalize(roadAData.startOrEnd);
@@ -549,7 +580,7 @@ export function convertToMapGeoJson(
 
   const processedRoadFeatures = options.skipCoalescing
     ? roadFeatures
-    : coalesceRoadFeatures(roadFeatures);
+    : coalesceRoadFeatures(roadFeatures, !!options.keepPrefabPathsApart);
   if (options.skipCoalescing) {
     logger.info('skipped coalescing road features and combining v-junctions.');
     logger.info(processedRoadFeatures.length, 'total road features.');
@@ -897,7 +928,10 @@ function createExitFeatures(
  * Joins adjacent `roadFeature`s together if their ends are close to each other,
  * and if their properties are compatible.
  */
-function coalesceRoadFeatures(roadFeatures: RoadFeature[]): RoadFeature[] {
+function coalesceRoadFeatures(
+  roadFeatures: RoadFeature[],
+  keepPrefabPathsApart: boolean,
+): RoadFeature[] {
   logger.log('coalescing road features...');
 
   const heads = new Map<bigint, RoadFeature[]>();
@@ -983,8 +1017,12 @@ function coalesceRoadFeatures(roadFeatures: RoadFeature[]): RoadFeature[] {
   ): RoadFeature[] => {
     availableRoads.delete(road);
 
+    // prefab UI paths have ids like `<prefab uid>road<n>`
+    const isPath = (r: RoadFeature) => String(r.id).includes('road');
     const inRange = (a: RoadFeature, b: RoadFeature) =>
-      distance(a.geometry.coordinates[0], b.geometry.coordinates.at(-1)!) < 2.5;
+      distance(a.geometry.coordinates[0], b.geometry.coordinates.at(-1)!) <
+        2.5 &&
+      (!keepPrefabPathsApart || isPath(a) === isPath(b));
 
     if (dir === 'head') {
       const headKey = road.properties.startNodeUid;
@@ -1374,6 +1412,9 @@ function prefabToFeatures(
 
   const tx = (pos: Position) =>
     toMapPosition(pos, prefab, prefabDescription, nodes);
+  const yard = !JUNCTION_DIRS.includes(
+    (prefabDescription as { path?: string }).path?.split('/')[1] ?? '',
+  );
 
   const prefabNodes = prefab.nodeUids.map(id => assertExists(nodes.get(id)));
   const findClosestNode = (point: Position): Node | undefined =>
@@ -1396,6 +1437,8 @@ function prefabToFeatures(
           secret: prefab.secret ?? false,
           zIndex: poly.zIndex,
           color: poly.color,
+          // company, service area, parking...: drawn over the roads into it
+          ...(yard ? { yard: true } : {}),
         }),
         id: prefab.uid.toString(16) + 'poly' + i,
       };
@@ -1497,6 +1540,8 @@ function roadToFeature(
   roadLook: RoadLook,
   nodes: ReadonlyMap<bigint, Node>,
   _dividerFeatures: GeoJSON.Feature<GeoJSON.LineString>[],
+  measured: LookLaneOffsets | undefined,
+  leftHand: boolean,
 ): RoadFeature[] {
   const startNode = Preconditions.checkExists(nodes.get(road.startNodeUid));
   const endNode = Preconditions.checkExists(nodes.get(road.endNodeUid));
@@ -1548,6 +1593,11 @@ function roadToFeature(
   //  }
   //}
 
+  // lane variants change the lanes, so the look's measurement doesn't hold.
+  if (measured && !road.leftLanesVariant && !road.rightLanesVariant) {
+    return measuredRoadToFeatures(road, points, properties, measured, leftHand);
+  }
+
   const offset =
     road.maybeDivided && roadLook.laneOffset
       ? roadLook.laneOffset
@@ -1597,6 +1647,48 @@ function roadToFeature(
       id: road.uid.toString(16),
     },
   ];
+}
+
+/**
+ * Draws a road where its lanes are, as measured on prefab nav curves: two
+ * carriageways when they're at least `MIN_DIVIDED_MEDIAN` apart, each in the
+ * middle of its lanes; otherwise one line in the middle of all lanes.
+ */
+function measuredRoadToFeatures(
+  road: Road,
+  points: Position[],
+  properties: RoadFeature['properties'],
+  measured: LookLaneOffsets,
+  leftHand: boolean,
+): RoadFeature[] {
+  const side = leftHand ? -1 : 1;
+  const forward = side * measured.forward;
+  const backward = side * measured.backward;
+  const id = road.uid.toString(16);
+  const shifted = (offset: number) =>
+    Math.abs(offset) < 0.25
+      ? points
+      : lineOffset(turf.lineString(points), offset, { units: 'degrees' })
+          .geometry.coordinates;
+
+  if (measured.median >= MIN_DIVIDED_MEDIAN) {
+    return [
+      {
+        ...lineString(shifted(forward), { ...properties, leftLanes: 0 }),
+        id,
+      },
+      {
+        ...lineString(shifted(backward), { ...properties, rightLanes: 0 }),
+        id,
+      },
+    ];
+  }
+  const { leftLanes, rightLanes } = properties;
+  const center =
+    leftLanes + rightLanes > 0
+      ? (forward * rightLanes + backward * leftLanes) / (leftLanes + rightLanes)
+      : (forward + backward) / 2;
+  return [{ ...lineString(shifted(center), properties), id }];
 }
 
 function roadLookToProperties(

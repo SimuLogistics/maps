@@ -995,7 +995,15 @@ function updateGraphWithFerries(
     if (!ferryPrefab) {
       // The ferry's prefab was dropped with unselectable DLC content (e.g.
       // Ålesund in ETS2 1.62.1: a port with no connection yet, behind a DLC
-      // guard that no selectable DLC maps to). Nothing can reach it: skip it.
+      // guard that no selectable DLC maps to). With no connection it leads
+      // nowhere: skip it. Once it has connections, a real link would be lost:
+      // fail so the DLC guard gets mapped (libs/map/constants.ts).
+      assert(
+        ferry.connections.length === 0,
+        `ferry ${ferry.token} has connections but its prefab ` +
+          `${ferry.prefabUid.toString(16)} is in unselectable DLC content: ` +
+          'map its DLC guard in libs/map/constants.ts',
+      );
       logger.warn(
         `ferry ${ferry.token} skipped: its prefab ${ferry.prefabUid.toString(16)}`,
         'is in unselectable DLC content',

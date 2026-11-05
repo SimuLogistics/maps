@@ -991,10 +991,17 @@ function updateGraphWithFerries(
     let ferryEntrance: Node;
     let ferryExit: Node;
     assert(ferry.prefabUid != null, 'ferry must have prefab');
-    const ferryPrefab = assertExists(
-      prefabs.get(ferry.prefabUid),
-      `no prefab for ferry:\nn${JSON.stringify(ferry, null, 2)}`,
-    );
+    const ferryPrefab = prefabs.get(ferry.prefabUid);
+    if (!ferryPrefab) {
+      // The ferry's prefab was dropped with unselectable DLC content (e.g.
+      // Ålesund in ETS2 1.62.1: a port with no connection yet, behind a DLC
+      // guard that no selectable DLC maps to). Nothing can reach it: skip it.
+      logger.warn(
+        `ferry ${ferry.token} skipped: its prefab ${ferry.prefabUid.toString(16)}`,
+        'is in unselectable DLC content',
+      );
+      continue;
+    }
     const prefabNodesInGraph = ferryPrefab.nodeUids.filter(nid =>
       graph.has(nid),
     );

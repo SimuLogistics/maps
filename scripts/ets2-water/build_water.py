@@ -17,6 +17,8 @@ files; it was found by fitting every ets2.pmtiles road point against the
 texture (1.8% of road points land on water, mostly bridges and ferry ramps).
 Great Britain is the exception: the texture draws it at real-world scale while
 UK game content is ~1/0.75 bigger, so UK sectors get their own transform.
+Iceland, in the same sectors, is drawn at plain game coordinates (see
+ICELAND_GAME).
 
 Country borders: over the texture, the real-world ones from
 resources/countries.geojson fall on the thin light lines the texture draws
@@ -63,6 +65,19 @@ GAME_SCALE = 19
 # the texture position is CALAIS + (game - CALAIS) * UK_SCALE + UK_TEXTURE_SHIFT.
 # The shift was fitted on UK road points (1.2% of them land on water).
 UK_TEXTURE_SHIFT = (-500, 200)
+# Iceland (dlc_iceland, 1.62) lies in sectors the projection treats as UK
+# (up and left of Calais), so its roads get the UK scale like Great Britain.
+# But the texture draws it at plain game coordinates: 100% of its road
+# points land on land that way, 0% with the UK texture transform.
+# Box in game coords (x0, y0, x1, y1) around its roads (x -77k to -52k,
+# y -113k to -92k), far from Great Britain (y above ~ -56k), the Faroes
+# (x ~ -45k) and Greenland (y below ~ -120k), which keep the UK transform.
+ICELAND_GAME = (-82000, -118000, -48000, -86000)
+# Real-world Iceland (lon0, lat0, lon1, lat1), north-west of the game's
+# one. Sampled with the UK transform, the texture would draw its Iceland
+# there a second time (and the real-world coastline, past the texture's top
+# edge): it is sea, except where it overlaps the game's Iceland.
+REAL_ICELAND = (-25.5, 62.8, -12.5, 66.8)
 
 # Light grey (sea) vs dark grey/black (land) in the 8-bit luminance image.
 SEA_THRESHOLD = 100
@@ -137,13 +152,16 @@ def texture_coords_to_wgs84(tx, ty):
     """Inverse of wgs84_to_texture_coords."""
     ux = CALAIS[0] + (tx - UK_TEXTURE_SHIFT[0] - CALAIS[0]) / UK_SCALE
     uy = CALAIS[1] + (ty - UK_TEXTURE_SHIFT[1] - CALAIS[1]) / UK_SCALE
-    is_uk = is_uk_sector(ux, uy)
+    # The texture draws Iceland at plain game coordinates.
+    is_uk = is_uk_sector(ux, uy) & ~in_box(tx, ty, ICELAND_GAME)
     return game_to_wgs84(np.where(is_uk, ux, tx), np.where(is_uk, uy, ty))
 
 
 def wgs84_to_texture_coords(lon, lat):
-    """Game coords, except in the UK where the texture is at real scale."""
+    """Game coords, except in the UK where the texture is at real scale
+    (Iceland excepted, see ICELAND_GAME)."""
     x, y, is_uk = wgs84_to_game(lon, lat)
+    is_uk &= ~in_box(x, y, ICELAND_GAME)
     ux = CALAIS[0] + (x - CALAIS[0]) * UK_SCALE + UK_TEXTURE_SHIFT[0]
     uy = CALAIS[1] + (y - CALAIS[1]) * UK_SCALE + UK_TEXTURE_SHIFT[1]
     return np.where(is_uk, ux, x), np.where(is_uk, uy, y)
@@ -237,8 +255,14 @@ def build_water_raster(sea, center, size_km, ne_features):
         )
         block = water[r0:r1]
         block[ok] = v >= 0.5
+        gx, gy, _ = wgs84_to_game(lon, lat)
+        block[in_box(lon, lat, REAL_ICELAND) & ~in_box(gx, gy, ICELAND_GAME)] = 1
         inside[r0:r1] = ok
     return water, inside
+
+
+def in_box(x, y, bbox):
+    return (x >= bbox[0]) & (y >= bbox[1]) & (x <= bbox[2]) & (y <= bbox[3])
 
 
 def vectorize(water):
